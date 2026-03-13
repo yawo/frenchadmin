@@ -499,6 +499,105 @@ def download_and_optionally_process_files(
                     logger.error(
                         f"File : {data_source} is not a supported file, skipping download."
                     )
+            
+            elif attributes.get("type") == "bofip_flux" and not is_update:
+                #TODO BOFIP STOCK
+                url = attributes.get("download_url", "")
+                download_folder = os.path.join(
+                    BASE_PATH, attributes.get("download_folder", "")
+                )                  
+
+                os.makedirs(download_folder, exist_ok=True)
+                logger.info(f"Downloading '{data_source}' from {url}...")
+                response = requests.get(url)
+                csv = response.content.decode("utf-8")
+                # Open CSV and check files against last_downloaded_file_list
+                '''
+                Nom du fichier;Date de début;Date de fin;Téléchargement;Type;Contenu;Empreinte
+                bofip_flux_live_20260129_20260204.tgz;2026-01-29;2026-02-04;https://bofip.impots.gouv.fr/opendata/flux/6;flux;6 nouvelles publications doctrinales.;https://bofip.impots.gouv.fr/opendata/empreinte/flux/6
+                bofip_flux_live_20260122_20260128.tgz;2026-01-22;2026-01-28;https://bofip.impots.gouv.fr/opendata/flux/5;flux;3 nouvelles publications doctrinales. Mise à jour du plan de classement.;https://bofip.impots.gouv.fr/opendata/empreinte/flux/5
+                bofip_flux_live_20260101_20260107.tgz;2026-01-01;2026-01-07;https://bofip.impots.gouv.fr/opendata/flux/2;flux;Aucune publication sur cette période.;https://bofip.impots.gouv.fr/opendata/empreinte/flux/2
+                bofip_flux_live_20260205_20260211.tgz;2026-02-05;2026-02-11;https://bofip.impots.gouv.fr/opendata/flux/7;flux;12 nouvelles publications doctrinales. Mise à jour du plan de classement.;https://bofip.impots.gouv.fr/opendata/empreinte/flux/7
+                bofip_flux_live_20260115_20260121.tgz;2026-01-15;2026-01-21;https://bofip.impots.gouv.fr/opendata/flux/4;flux;11 nouvelles publications doctrinales. Mise à jour du plan de classement.;https://bofip.impots.gouv.fr/opendata/empreinte/flux/4
+                bofip_stock_live_20260128.tgz;;2026-01-28;https://bofip.impots.gouv.fr/opendata/stock/1;stock;Contenu doctrinal en vigueur au 28/01/2026.;https://bofip.impots.gouv.fr/opendata/empreinte/stock/1
+                bofip_flux_live_20260108_20260114.tgz;2026-01-08;2026-01-14;https://bofip.impots.gouv.fr/opendata/flux/3;flux;4 nouvelles publications doctrinales. Mise à jour du plan de classement.;https://bofip.impots.gouv.fr/opendata/empreinte/flux/3
+                '''
+                csvLines = csv.split("\n")
+
+                # Sort zip with url, sorted on filename
+                subtypes = ["flux", "stock"]
+                for subtype in subtypes:                  
+                    try:
+                        last_downloaded_file = log.get(data_source).get(
+                            f"last_downloaded_{subtype}_file", "")
+                    except Exception:
+                        last_downloaded_file = "" 
+
+                    tar_gz_files = sorted(
+                        [
+                            {"filename": line.split(";")[0], "url": line.split(";")[3]}
+                            for line in csvLines
+                            if line.split(";")[0].endswith(".tgz") and line.split(";")[4] == subtype
+                        ], key=lambda x: x["filename"]
+                    )
+                    
+                    logger.debug(
+                        f"{len(tar_gz_files)} {subtype} tar.gz files found in {url}: {tar_gz_files}"
+                    )
+
+                    if last_downloaded_file in tar_gz_files:
+                        last_file_index = tar_gz_files.index(last_downloaded_file)
+                        logger.info(
+                            f"Last downloaded {subtype} file is {last_downloaded_file} according to the data history"
+                        )
+                    else:
+                        last_file_index = -1
+
+                    if last_file_index == len(tar_gz_files) - 1:
+                        logger.info(f"No new {subtype} files to download")
+                        return
+
+                    else:
+                        for file in tar_gz_files[
+                            last_file_index + 1 :
+                        ]:  # As we already downloaded the last file, we start from the next file
+                            filename = file.get("filename")
+                            url=file.get("url")
+                            download_path = os.path.join(download_folder, filename)
+                            download_file(url=url, destination_path=download_path)
+
+                            if not streaming:
+                                extract_and_remove_tar_file(
+                                    file_path=download_path,
+                                    extract_path=download_folder,
+                                )
+                            if process:
+                                # Process the downloaded file and remove the folder after processing
+                                process_data(
+                                    table_name=table_name,
+                                    streaming=streaming,
+                                    model=model,
+                                )
+
+                                logger.info(
+                                    f"Successfully downloaded and processed {filename}"
+                                )
+                            else:
+                                logger.info(f"Successfully downloaded {filename}")
+
+                            # Update the last download file and date in the log
+                            log[data_source] = {
+                                "last_downloaded_file": filename,
+                                "last_download_date": datetime.now().strftime(
+                                    "%Y-%m-%d %H:%M:%S"
+                                ),
+                            }
+
+                            with open(data_history_path, "w") as file:
+                                json.dump(log, file, indent=4)
+                            logger.info(
+                                f"Log config file successfully updated to {data_history_path}"
+                            )
 
             else:
                 logger.error(f"Unknown type {attributes.get('type')} for {data_source}")
