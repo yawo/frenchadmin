@@ -63,6 +63,8 @@ with DAG(
         "TRAVAIL_EMPLOI",
         "DATA_GOUV_DATASETS_CATALOG",
         "LEGI",
+        "JADE",
+        "BOFIP",
     ]
 
     # Create triggers and wait sensors

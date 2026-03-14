@@ -902,6 +902,95 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
             logger.error(f"Error processing file {file_name}: {e}")
             raise e
 
+    elif file_name.startswith("JADETEXT") and file_name.endswith(".xml"):
+        table_name = "jade"
+        try:
+            cid = root.find(".//ID").text
+            nature = root.find(".//NATURE").text if root.find(".//NATURE") is not None else None
+            title_elem = root.find(".//TITRE")
+            title = title_elem.text if title_elem is not None else None
+            number_elem = root.find(".//NUMERO")
+            number = number_elem.text if number_elem is not None else None
+            solution_elem = root.find(".//SOLUTION")
+            solution = solution_elem.text if solution_elem is not None else None
+            jurisdiction_elem = root.find(".//JURIDICTION")
+            jurisdiction = jurisdiction_elem.text if jurisdiction_elem is not None else None
+            formation_elem = root.find(".//FORMATION")
+            formation = formation_elem.text if formation_elem is not None else None
+
+            date_elem = root.find(".//DATE_DEC")
+            try:
+                decision_date = datetime.strptime(
+                    date_elem.text, "%Y-%m-%d"
+                ).strftime("%Y-%m-%d") if date_elem is not None and date_elem.text else None
+            except ValueError:
+                decision_date = date_elem.text if date_elem is not None else None
+
+            contenu = root.find(".//BLOC_TEXTUEL//CONTENU")
+            text_content = []
+
+            if contenu is not None:
+                content = ET.tostring(contenu, encoding="unicode", method="xml")
+                content = "".join(ET.fromstring(content).itertext())
+                lines = content.splitlines()
+                cleaned_lines = [line for line in lines if line]
+                content = "\n".join(cleaned_lines)
+                text_content.append(content)
+            text_content = "\n".join(text_content)
+
+            chunks = make_chunks(
+                text=text_content,
+                chunk_size=1500,
+                chunk_overlap=0,
+                length_function="len",
+            )
+            data_to_insert = []
+
+            for k, text in enumerate(chunks):
+                try:
+                    chunk_index = k + 1
+                    chunk_text = f"{title}\n{text}" if title else text
+
+                    chunk_xxh64 = xxhash.xxh64(
+                        chunk_text.encode("utf-8"), seed=2025
+                    ).hexdigest()
+
+                    embeddings = generate_embeddings_with_retry(
+                        data=chunk_text, attempts=5, model=model
+                    )[0]
+
+                    chunk_id = f"{cid}_{chunk_index}"
+
+                    new_data = (
+                        chunk_id,
+                        cid,
+                        chunk_index,
+                        chunk_xxh64,
+                        nature,
+                        solution,
+                        title,
+                        number,
+                        decision_date,
+                        jurisdiction,
+                        formation,
+                        text,
+                        chunk_text,
+                        embeddings,
+                    )
+                    data_to_insert.append(new_data)
+                except PermissionDeniedError as e:
+                    logger.error(
+                        f"PermissionDeniedError (API key issue) for chunk {chunk_index} of file {file_name}: {e}"
+                    )
+                    raise e
+
+            if data_to_insert:
+                insert_data(data=data_to_insert, table_name=table_name)
+
+        except Exception as e:
+            logger.error(f"Error processing file {file_name}: {e}")
+            raise e
+
     elif file_name.startswith("JORFDOLE") and file_name.endswith(".xml"):
         table_name = "dole"
         try:
@@ -1476,6 +1565,125 @@ def process_dila_xml_files(
         logger.info(f"Successfully processed all files from {source_path}")
 
 
+def process_bofip_files(model: str = "BAAI/bge-m3"):
+    """
+    Processes BOFIP (Bulletin Officiel des Finances Publiques) CSV file and inserts
+    the processed data into the database.
+
+    The CSV file is expected to be located at the BOFIP_DATA_FOLDER and named 'bofip.csv'.
+    Each row in the CSV corresponds to a BOFIP document. Documents are split into chunks,
+    embedded, and inserted into the BOFIP database table.
+
+    Args:
+        model (str): The embedding model to use (default: "BAAI/bge-m3").
+    """
+    from config import BOFIP_DATA_FOLDER
+
+    table_name = "bofip"
+    bofip_file = os.path.join(BOFIP_DATA_FOLDER, "bofip.csv")
+
+    if not os.path.exists(bofip_file):
+        logger.error(f"BOFIP CSV file not found at: {bofip_file}")
+        raise FileNotFoundError(f"BOFIP CSV file not found at: {bofip_file}")
+
+    logger.info(f"Processing BOFIP CSV file: {bofip_file}")
+
+    try:
+        df = pd.read_csv(bofip_file, sep=";", dtype=str, encoding="utf-8")
+    except Exception:
+        df = pd.read_csv(bofip_file, sep=",", dtype=str, encoding="utf-8")
+
+    df = df.where(pd.notnull(df), None)
+
+    checkpoint = CheckpointManager(bofip_file)
+    last_processed_index = checkpoint.load()
+
+    def _do_process():
+        for idx, row in df.iterrows():
+            if idx <= last_processed_index:
+                continue
+
+            doc_id = str(row.get("identifiant") or row.get("id") or idx).strip()
+            title = str(row.get("titre") or row.get("title") or "").strip() or None
+            date_publication = (
+                str(row.get("date_publication") or row.get("date") or "").strip() or None
+            )
+            url = str(row.get("url") or "").strip() or None
+            document_type = (
+                str(row.get("type") or row.get("document_type") or "").strip() or None
+            )
+            theme = str(row.get("theme") or "").strip() or None
+            text_content = (
+                str(row.get("texte") or row.get("text") or row.get("contenu") or "").strip()
+            )
+
+            if not doc_id or not text_content:
+                logger.debug(f"Skipping row {idx}: missing doc_id or text content")
+                checkpoint.save(idx, metadata={"doc_id": doc_id, "table": table_name})
+                continue
+
+            chunks = make_chunks(
+                text=text_content,
+                chunk_size=1500,
+                chunk_overlap=0,
+                length_function="len",
+            )
+
+            data_to_insert = []
+            for k, text in enumerate(chunks):
+                try:
+                    chunk_index = k + 1
+                    chunk_text = f"{title}\n{text}" if title else text
+
+                    chunk_xxh64 = xxhash.xxh64(
+                        chunk_text.encode("utf-8"), seed=2025
+                    ).hexdigest()
+
+                    embeddings = generate_embeddings_with_retry(
+                        data=chunk_text, attempts=5, model=model
+                    )[0]
+
+                    chunk_id = f"{doc_id}_{chunk_index}"
+
+                    new_data = (
+                        chunk_id,
+                        doc_id,
+                        chunk_index,
+                        chunk_xxh64,
+                        title,
+                        date_publication,
+                        url,
+                        document_type,
+                        theme,
+                        text,
+                        chunk_text,
+                        embeddings,
+                    )
+                    data_to_insert.append(new_data)
+                except PermissionDeniedError as e:
+                    logger.error(
+                        f"PermissionDeniedError (API key issue) for chunk {chunk_index} of BOFIP doc {doc_id}: {e}"
+                    )
+                    raise e
+
+            if data_to_insert:
+                insert_data(data=data_to_insert, table_name=table_name)
+
+            checkpoint.save(idx, metadata={"doc_id": doc_id, "table": table_name})
+
+    if last_processed_index == -1:
+        logger.info("Starting BOFIP processing from the beginning. Refreshing the table.")
+        with refresh_table(table_name, model):
+            _do_process()
+    else:
+        logger.info(f"Resuming BOFIP processing from checkpoint index {last_processed_index + 1}")
+        _do_process()
+
+    checkpoint.remove()
+    remove_folder(folder_path=BOFIP_DATA_FOLDER)
+    logger.info(f"BOFIP processing complete. Folder {BOFIP_DATA_FOLDER} removed.")
+
+
 def _process_sheets_content(
     table_name: str,
     corpus_handler: CorpusHandler,
@@ -1885,6 +2093,12 @@ def process_data(table_name: str, streaming: bool = True, model: str = "BAAI/bge
                     logger.debug(
                         f"Folder: {current_dir} successfully removed after processing"
                     )
+        elif attributes.get("type") == "bofip":
+            logger.info(f"Processing BOFIP CSV file located in: {base_folder}")
+            process_bofip_files(model=model)
+            logger.info(
+                f"BOFIP data from {base_folder} successfully processed and inserted into the postgres database"
+            )
         else:
             logger.error(f"Unknown base folder '{base_folder}' for processing data.")
             raise ValueError(

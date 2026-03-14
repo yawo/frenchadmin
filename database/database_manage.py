@@ -368,6 +368,46 @@ def create_all_tables(model="BAAI/bge-m3", delete_existing: bool = False):
                         )
                     """)
 
+                elif table_name.lower() == "jade":
+                    cursor.execute(f"""
+                        CREATE TABLE JADE (
+                            chunk_id TEXT PRIMARY KEY,
+                            doc_id TEXT NOT NULL,
+                            chunk_index INTEGER NOT NULL,
+                            chunk_xxh64 TEXT NOT NULL,
+                            nature TEXT,
+                            solution TEXT,
+                            title TEXT,
+                            number TEXT,
+                            decision_date TEXT,
+                            jurisdiction TEXT,
+                            formation TEXT,
+                            text TEXT,
+                            chunk_text TEXT,
+                            "embeddings_{model_name}" vector({embedding_size}),
+                            UNIQUE(chunk_id)
+                        )
+                    """)
+
+                elif table_name.lower() == "bofip":
+                    cursor.execute(f"""
+                        CREATE TABLE BOFIP (
+                            chunk_id TEXT PRIMARY KEY,
+                            doc_id TEXT NOT NULL,
+                            chunk_index INTEGER NOT NULL,
+                            chunk_xxh64 TEXT NOT NULL,
+                            title TEXT,
+                            date_publication TEXT,
+                            url TEXT,
+                            document_type TEXT,
+                            theme TEXT,
+                            text TEXT,
+                            chunk_text TEXT,
+                            "embeddings_{model_name}" vector({embedding_size}),
+                            UNIQUE(chunk_id)
+                        )
+                    """)
+
                 elif table_name.lower() == "data_gouv_datasets_catalog":
                     cursor.execute(f"""
                         CREATE TABLE DATA_GOUV_DATASETS_CATALOG (
@@ -1258,6 +1298,8 @@ def insert_data(data: list, table_name: str, model="BAAI/bge-m3"):
             "CNIL",
             "CONSTIT",
             "DOLE",
+            "JADE",
+            "BOFIP",
         ]:  # Only for data having a DILA cid (doc_id)
             # Delete the existing data for the same doc_id in order to avoid duplicates and outdated data
             source_doc_id = data[0][
@@ -1415,6 +1457,42 @@ def insert_data(data: list, table_name: str, model="BAAI/bge-m3"):
                 end_date = EXCLUDED.end_date,
                 nota = EXCLUDED.nota,
                 links = EXCLUDED.links,
+                text = EXCLUDED.text,
+                chunk_text = EXCLUDED.chunk_text,
+                "embeddings_{model_name}" = EXCLUDED."embeddings_{model_name}";
+            """
+        elif table_name.lower() == "jade":
+            insert_query = f"""
+                INSERT INTO JADE (chunk_id, doc_id, chunk_index, chunk_xxh64, nature, solution, title, number, decision_date, jurisdiction, formation, text, chunk_text, "embeddings_{model_name}")
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (chunk_id) DO UPDATE SET
+                doc_id = EXCLUDED.doc_id,
+                chunk_index = EXCLUDED.chunk_index,
+                chunk_xxh64 = EXCLUDED.chunk_xxh64,
+                nature = EXCLUDED.nature,
+                solution = EXCLUDED.solution,
+                title = EXCLUDED.title,
+                number = EXCLUDED.number,
+                decision_date = EXCLUDED.decision_date,
+                jurisdiction = EXCLUDED.jurisdiction,
+                formation = EXCLUDED.formation,
+                text = EXCLUDED.text,
+                chunk_text = EXCLUDED.chunk_text,
+                "embeddings_{model_name}" = EXCLUDED."embeddings_{model_name}";
+            """
+        elif table_name.lower() == "bofip":
+            insert_query = f"""
+                INSERT INTO BOFIP (chunk_id, doc_id, chunk_index, chunk_xxh64, title, date_publication, url, document_type, theme, text, chunk_text, "embeddings_{model_name}")
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (chunk_id) DO UPDATE SET
+                doc_id = EXCLUDED.doc_id,
+                chunk_index = EXCLUDED.chunk_index,
+                chunk_xxh64 = EXCLUDED.chunk_xxh64,
+                title = EXCLUDED.title,
+                date_publication = EXCLUDED.date_publication,
+                url = EXCLUDED.url,
+                document_type = EXCLUDED.document_type,
+                theme = EXCLUDED.theme,
                 text = EXCLUDED.text,
                 chunk_text = EXCLUDED.chunk_text,
                 "embeddings_{model_name}" = EXCLUDED."embeddings_{model_name}";
