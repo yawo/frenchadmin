@@ -8,7 +8,7 @@ from urllib.request import urlopen
 import requests
 from bs4 import BeautifulSoup
 
-from config import BASE_PATH, config_file_path, data_history_path, get_logger
+from config import BASE_PATH, EMBEDDING_MODEL, config_file_path, data_history_path, get_logger
 from utils import (
     correct_wrong_column_contents,
     download_file,
@@ -26,7 +26,7 @@ def download_and_optionally_process_files(
     table_name: str,
     process: bool = False,
     streaming: bool = True,
-    model: str = "BAAI/bge-m3",
+    model: str = EMBEDDING_MODEL,
 ):
     """
     Download and optionally process files based on the data configuration type.
@@ -36,7 +36,7 @@ def download_and_optionally_process_files(
         table_name: Name of the data source to process
         process: Flag to indicate whether to process the data after download (default: False)
         streaming: Flag to indicate whether to stream extraction of tar files, for DILA files only (default: True)
-        model: Model name for data processing (default: "BAAI/bge-m3")
+        model: Model name for data processing (default: EMBEDDING_MODEL)
     """
 
     config = load_config(config_file_path=config_file_path)
@@ -610,7 +610,7 @@ def download_and_optionally_process_files(
 def download_and_optionally_process_all_files(
     process: bool = False,
     streaming: bool = True,
-    model: str = "BAAI/bge-m3",
+    model: str = EMBEDDING_MODEL,
 ):
     """
     Downloads and optionally processes all files listed in the configuration file.
@@ -619,7 +619,7 @@ def download_and_optionally_process_all_files(
 
     Args:
         process (bool): Flag to indicate whether to process the data after download (default: False).
-        model (str): Model name for data processing (default: "BAAI/bge-m3").
+        model (str): Model name for data processing (default: EMBEDDING_MODEL).
     """
     config = load_config(config_file_path=config_file_path)
 

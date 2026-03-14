@@ -30,7 +30,7 @@ with DAG(
     tags=["mediatech", "legi"],
     params={
         "table_name": "legi",
-        "model": "BAAI/bge-m3",
+        "model": "louisbrulenaudet/lemone-embed-pro",
         "private": False,
         "repository": "AgentPublic",
         "split": True,

@@ -30,7 +30,7 @@ with DAG(
     tags=["mediatech", "data_gouv"],
     params={
         "table_name": "data_gouv_datasets_catalog",
-        "model": "BAAI/bge-m3",
+        "model": "louisbrulenaudet/lemone-embed-pro",
         "private": False,
         "repository": "AgentPublic",
     },

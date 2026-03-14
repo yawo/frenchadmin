@@ -30,7 +30,7 @@ with DAG(
     tags=["mediatech", "constit"],
     params={
         "table_name": "constit",
-        "model": "BAAI/bge-m3",
+        "model": "louisbrulenaudet/lemone-embed-pro",
         "private": False,
         "repository": "AgentPublic",
     },

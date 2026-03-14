@@ -30,7 +30,7 @@ with DAG(
     tags=["mediatech", "travail_emploi"],
     params={
         "table_name": "travail_emploi",
-        "model": "BAAI/bge-m3",
+        "model": "louisbrulenaudet/lemone-embed-pro",
         "private": False,
         "repository": "AgentPublic",
     },

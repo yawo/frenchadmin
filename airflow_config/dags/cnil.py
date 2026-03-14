@@ -30,7 +30,7 @@ with DAG(
     tags=["mediatech", "cnil"],
     params={
         "table_name": "cnil",
-        "model": "BAAI/bge-m3",
+        "model": "louisbrulenaudet/lemone-embed-pro",
         "private": False,
         "repository": "AgentPublic",
     },

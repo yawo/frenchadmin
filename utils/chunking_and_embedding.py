@@ -16,6 +16,7 @@ from transformers import AutoTokenizer
 from config import (
     API_KEY,
     API_URL,
+    EMBEDDING_MODEL,
     SERVICE_PUBLIC_PART_DATA_FOLDER,
     SERVICE_PUBLIC_PRO_DATA_FOLDER,
     TRAVAIL_EMPLOI_DATA_FOLDER,
@@ -27,7 +28,7 @@ from .sheets_parser import RagSource
 
 logger = get_logger(__name__)
 
-_bge_tokenizer = None  # Global tokenizer instance for BGE-M3 model
+_tokenizer_cache = {}  # Cache of loaded tokenizers keyed by model name
 
 
 class CorpusHandler(ABC):
@@ -64,7 +65,7 @@ class CorpusHandler(ABC):
             yield corpus[start_idx:end_idx]
 
     def iter_docs_embeddings(
-        self, batch_size: int, model: str = "BAAI/bge-m3"
+        self, batch_size: int, model: str = EMBEDDING_MODEL
     ) -> Generator[tuple[list], None, None]:
         desc = f"Processing corpus {self._name} with embeddings..."
         for batch in self.iter_docs(batch_size=batch_size, desc=desc):
@@ -113,14 +114,14 @@ class SheetChunksHandler(CorpusHandler):
 
 
 def generate_embeddings(
-    data: str | list[str], model: str = "BAAI/bge-m3"
+    data: str | list[str], model: str = EMBEDDING_MODEL
 ) -> list[float]:
     """
     Generates embeddings for a given text using a specified model.
 
     Args:
         data (str or list[str]): The input to generate embeddings for.
-        model (str, optional): The model identifier to use for generating embeddings. Defaults to "BAAI/bge-m3".
+        model (str, optional): The model identifier to use for generating embeddings. Defaults to EMBEDDING_MODEL.
 
     Returns:
         list[float]: The embedding vector for the input text.
@@ -143,7 +144,7 @@ def generate_embeddings(
 def generate_embeddings_with_retry(
     data: str | list[str],
     attempts: int = 5,
-    model: str = "BAAI/bge-m3",
+    model: str = EMBEDDING_MODEL,
     time_sleep: int = 60,
 ) -> list[float]:
     """
@@ -157,7 +158,7 @@ def generate_embeddings_with_retry(
         data (str | list[str]): The text data to generate embeddings for.
             Can be a single string or a list of strings.
         attempts (int, optional): Maximum number of retry attempts. Defaults to 5.
-        model (str, optional): The embedding model to use. Defaults to "BAAI/bge-m3".
+        model (str, optional): The embedding model to use. Defaults to EMBEDDING_MODEL.
             Note: This parameter is passed to the function but not directly used.
 
     Returns:
@@ -195,25 +196,28 @@ def _get_length_function(length_function: str):
 
     Args:
         length_function (str): The identifier for the desired length function.
+            Use "len" for character-based length, "bge_m3_tokenizer" for backwards
+            compatibility with the BAAI/bge-m3 tokenizer, or any HuggingFace model
+            name to load the corresponding tokenizer.
     """
-    global _bge_tokenizer
+    global _tokenizer_cache
 
     if length_function == "len":
         return len
-    elif length_function == "bge_m3_tokenizer":
-        if _bge_tokenizer is None:
-            _bge_tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-m3")
-        return lambda text: len(_bge_tokenizer.encode(text))
-    else:
-        logger.error(f"Unknown length_function: {length_function}")
-        raise ValueError(f"Unknown length_function: {length_function}")
+
+    # "bge_m3_tokenizer" is kept for backwards compatibility
+    model_name = "BAAI/bge-m3" if length_function == "bge_m3_tokenizer" else length_function
+    if model_name not in _tokenizer_cache:
+        _tokenizer_cache[model_name] = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = _tokenizer_cache[model_name]
+    return lambda text: len(tokenizer.encode(text))
 
 
 def make_chunks(
     text: str,
     chunk_size: int = 1500,
     chunk_overlap: int = 0,
-    length_function="bge_m3_tokenizer",
+    length_function=EMBEDDING_MODEL,
 ) -> list[str]:
     """
     Splits the input text into overlapping chunks using a recursive character-based text splitter.
@@ -221,7 +225,9 @@ def make_chunks(
         text (str): The input text to be split into chunks.
         chunk_size (int, optional): The maximum size of each chunk.
         chunk_overlap (int, optional): The number of overlapping characters between consecutive chunks.
-        length_function (callable, optional): Function to calculate the length of text.
+        length_function (str or callable, optional): Controls text length measurement. Accepts "len"
+            for character count, "bge_m3_tokenizer" for backwards compatibility, or any HuggingFace
+            model name to use the corresponding tokenizer. Defaults to EMBEDDING_MODEL.
     Returns:
         List[str]: A list of text chunks generated from the input text.
     """
@@ -315,7 +321,7 @@ def make_chunks_sheets(
     structured=True,
     chunk_size=1024,
     chunk_overlap=0,
-    length_function="bge_m3_tokenizer",
+    length_function=EMBEDDING_MODEL,
 ) -> None:
     """
     Chunkify sheets and save chunks to a JSON file.
@@ -325,7 +331,9 @@ def make_chunks_sheets(
         structured (bool, optional): Whether the sheets are structured. Defaults to True.
         chunk_size (int, optional): Size of each chunk. Defaults to 1500.
         chunk_overlap (int, optional): Overlap between chunks. Defaults to 0.
-        length_function (str or callable, optional): Function to calculate the length of text. Defaults to "bge_m3_tokenizer".
+        length_function (str or callable, optional): Controls text length measurement. Accepts "len"
+            for character count, "bge_m3_tokenizer" for backwards compatibility, or any HuggingFace
+            model name to use the corresponding tokenizer. Defaults to EMBEDDING_MODEL.
     """
 
     if storage_dir is None:

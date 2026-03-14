@@ -13,6 +13,7 @@ from qdrant_client import QdrantClient, models
 from tqdm import tqdm
 
 from config import (
+    EMBEDDING_MODEL,
     POSTGRES_DB,
     POSTGRES_HOST,
     POSTGRES_PASSWORD,
@@ -89,7 +90,7 @@ def close_connection_pool():
 atexit.register(close_connection_pool)
 
 
-def create_all_tables(model="BAAI/bge-m3", delete_existing: bool = False):
+def create_all_tables(model=EMBEDDING_MODEL, delete_existing: bool = False):
     """
     Creates the necessary tables in the PostgreSQL database as specified in the data configuration file.
     Optionally deletes existing tables before creation.
@@ -104,7 +105,7 @@ def create_all_tables(model="BAAI/bge-m3", delete_existing: bool = False):
         - Creates an index on doc_id column for faster queries.
     - Commits all changes and logs the process.
     Args:
-        model (str): The embedding model to use. Defaults to "BAAI/bge-m3".
+        model (str): The embedding model to use. Defaults to EMBEDDING_MODEL.
         delete_existing (bool, optional): If True, existing tables will be dropped before creation. Defaults to False.
     Raises:
         Logs errors if database connection, extension enabling, table creation, or index creation fails.
@@ -510,7 +511,7 @@ def update_mapping_table(table_name: str, full_table_name: str):
 
 
 @contextmanager
-def refresh_table(table_name: str, model: str = "BAAI/bge-m3"):
+def refresh_table(table_name: str, model: str = EMBEDDING_MODEL):
     """
     Context manager for refreshing a PostgreSQL table by dropping indexes, truncating data,
     and recreating indexes.
@@ -1228,7 +1229,7 @@ def export_table_to_parquet(
             conn.close()
 
 
-def insert_data(data: list, table_name: str, model="BAAI/bge-m3"):
+def insert_data(data: list, table_name: str, model=EMBEDDING_MODEL):
     """
     Inserts a list of data rows into the specified PostgreSQL table, handling upserts and duplicate avoidance.
 
@@ -1510,7 +1511,7 @@ def postgres_to_qdrant(
     table_name: str,
     qdrant_client: QdrantClient,
     collection_name: str,
-    model: str = "BAAI/bge-m3",
+    model: str = EMBEDDING_MODEL,
     delete_existing: bool = False,
 ):
     """
@@ -1531,7 +1532,7 @@ def postgres_to_qdrant(
         Exception: Any error encountered during database operations is logged.
 
     Note:
-        The function uses BAAI/bge-m3 for dense vector embeddings and Qdrant/bm25 by default for
+        The function uses EMBEDDING_MODEL for dense vector embeddings and Qdrant/bm25 by default for
         sparse vector embeddings to support hybrid search.
     """
 
