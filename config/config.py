@@ -69,6 +69,7 @@ SOURCE_MAP = {
     "travail_emploi": ["travail_emploi"],
     "legi": ["legi"],
     "jade": ["jade"],
+    "bofip": ["bofip"],
     "cnil": ["cnil"],
     "state_administrations_directory": ["state_administrations_directory"],
     "local_administrations_directory": ["local_administrations_directory"],
@@ -92,6 +93,7 @@ STATE_ADMINISTRATIONS_DIRECTORY_FOLDER = get_env_variable_path(
 )
 DOLE_DATA_FOLDER = get_env_variable_path("DOLE_DATA_FOLDER", "data/unprocessed/dole")
 JADE_DATA_FOLDER = get_env_variable_path("JADE_DATA_FOLDER", "data/unprocessed/jade")
+BOFIP_DATA_FOLDER = get_env_variable_path("BOFIP_DATA_FOLDER", "data/unprocessed/bofip")
 LEGI_DATA_FOLDER = get_env_variable_path("LEGI_DATA_FOLDER", "data/unprocessed/legi")
 TRAVAIL_EMPLOI_DATA_FOLDER = get_env_variable_path(
     "TRAVAIL_EMPLOI_DATA_FOLDER", "data/unprocessed/travail_emploi"
