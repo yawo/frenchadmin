@@ -1,4 +1,25 @@
 {
+    "cnil": {
+        "cnil": {
+            "download_url": "https://echanges.dila.gouv.fr/OPENDATA/CNIL/",
+            "download_folder": "data/unprocessed/cnil",
+            "type": "dila_folder"
+        }
+    },
+    "constit": {
+        "constit": {
+            "download_url": "https://echanges.dila.gouv.fr/OPENDATA/CONSTIT/",
+            "download_folder": "data/unprocessed/constit",
+            "type": "dila_folder"
+        }
+    },
+    "dole": {
+        "dole": {
+            "download_url": "https://echanges.dila.gouv.fr/OPENDATA/DOLE/",
+            "download_folder": "data/unprocessed/dole",
+            "type": "dila_folder"
+        }
+    },
     "legi": {
         "legi": {
             "download_url": "https://echanges.dila.gouv.fr/OPENDATA/LEGI/",
@@ -18,6 +39,46 @@
             "download_url": "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/bofip-impots/exports/csv",
             "download_folder": "data/unprocessed/bofip",
             "type": "bofip"
+        }
+    },
+    "state_administrations_directory": {
+        "state_administrations_directory": {
+            "download_url": "https://echanges.dila.gouv.fr/OPENDATA/RefOrgaAdminEtat/FluxAnneeCourante/dila_refOrga_admin_Etat_fr_latest.zip",
+            "download_folder": "data/unprocessed/state_administrations_directory",
+            "type": "directory"
+        }
+    },
+    "local_administrations_directory": {
+        "local_administrations_directory": {
+            "download_url": "https://lecomarquage.service-public.fr/donnees_locales_v4/all_latest.tar.bz2",
+            "download_folder": "data/unprocessed/local_administrations_directory",
+            "type": "directory"
+        }
+    },
+    "service_public": {
+        "service_public_part": {
+            "download_url": "https://lecomarquage.service-public.fr/vdd/3.4/part/zip/vosdroits-latest.zip",
+            "download_folder": "data/unprocessed/service_public_part",
+            "type": "sheets"
+        },
+        "service_public_pro": {
+            "download_url": "https://lecomarquage.service-public.fr/vdd/3.4/pro/zip/vosdroits-latest.zip",
+            "download_folder": "data/unprocessed/service_public_pro",
+            "type": "sheets"
+        }
+    },
+    "travail_emploi": {
+        "travail_emploi": {
+            "download_url": "https://github.com/SocialGouv/fiches-travail-data/raw/master/data/fiches-travail.json",
+            "download_folder": "data/unprocessed/travail_emploi",
+            "type": "sheets"
+        }
+    },
+    "data_gouv_datasets_catalog": {
+        "data_gouv_datasets_catalog": {
+            "download_url": "https://www.data.gouv.fr/api/1/datasets/catalogue-des-donnees-de-data-gouv-fr/",
+            "download_folder": "data/unprocessed/data_gouv_datasets_catalog",
+            "type": "data_gouv"
         }
     }
 }
