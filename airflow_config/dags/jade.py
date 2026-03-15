@@ -8,7 +8,7 @@ from notifier.notifications_template import (
     get_success_notifier,
 )
 
-from config import HF_TOKEN
+from config import EMBEDDING_MODEL, HF_TOKEN
 from database import create_all_tables, export_table_to_parquet
 from download_and_processing import download_and_optionally_process_files
 from utils.hugging_face import upload_dataset_task
@@ -30,7 +30,7 @@ with DAG(
     tags=["mediatech", "jade"],
     params={
         "table_name": "jade",
-        "model": "BAAI/bge-m3",
+        "model": EMBEDDING_MODEL,
         "private": False,
         "repository": "AgentPublic",
     },

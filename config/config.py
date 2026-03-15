@@ -65,7 +65,6 @@ SOURCE_MAP = {
     "constit": ["constit"],
     "dole": ["dole"],
     "data_gouv_datasets_catalog": ["data_gouv_datasets_catalog"],
-    "bofip": ["bofip"],
 }
 
 # Data folders
@@ -84,7 +83,6 @@ STATE_ADMINISTRATIONS_DIRECTORY_FOLDER = get_env_variable_path(
 DOLE_DATA_FOLDER = get_env_variable_path("DOLE_DATA_FOLDER", "data/unprocessed/dole")
 JADE_DATA_FOLDER = get_env_variable_path("JADE_DATA_FOLDER", "data/unprocessed/jade")
 LEGI_DATA_FOLDER = get_env_variable_path("LEGI_DATA_FOLDER", "data/unprocessed/legi")
-BOFIP_DATA_FOLDER = get_env_variable_path("BOFIP_DATA_FOLDER", "data/unprocessed/bofip")
 TRAVAIL_EMPLOI_DATA_FOLDER = get_env_variable_path(
     "TRAVAIL_EMPLOI_DATA_FOLDER", "data/unprocessed/travail_emploi"
 )
@@ -104,6 +102,9 @@ DATA_GOUV_DATASETS_CATALOG_DATA_FOLDER = get_env_variable_path(
 # OpenAI API configuration
 API_URL = os.getenv("API_URL", "https://albert.api.etalab.gouv.fr/v1")
 API_KEY = os.getenv("API_KEY", "your_api_key_here")
+
+# Embedding model configuration
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
 
 # Hugging Face configuration
 HF_TOKEN = os.getenv("HF_TOKEN", "your_hugging_face_token_here")

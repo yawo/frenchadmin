@@ -26,7 +26,7 @@ Options:
     --all                   Select all data sources from the data configuration file
     --model=<model_name>    Embedding model name [default: BAAI/bge-m3]. It is mandatory to specify the same model for all commands.
     --source=<source>       Source to process (service_public, travail_emploi, legi, cnil,
-                            state_administrations_directory, local_administrations_directory, constit, dole, jade, bofip)
+                            state_administrations_directory, local_administrations_directory, constit, dole, jade)
     --table=<name>          Table name to export or split (legi, service_public, etc.)
     --folder=<path>         Folder containing unprocessed data
     --input=<path>          Input path of the dataset to upload

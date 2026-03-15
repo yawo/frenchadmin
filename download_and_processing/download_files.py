@@ -599,33 +599,6 @@ def download_and_optionally_process_files(
                                 f"Log config file successfully updated to {data_history_path}"
                             )
 
-            elif attributes.get("type") == "bofip":
-                url = attributes.get("download_url", "")
-                download_folder = os.path.join(
-                    BASE_PATH, attributes.get("download_folder", "")
-                )
-                os.makedirs(download_folder, exist_ok=True)
-
-                logger.info(f"Downloading BOFIP CSV from {url}...")
-
-                destination_path = os.path.join(download_folder, "bofip.csv")
-                download_file(url=url, destination_path=destination_path)
-
-                if process:
-                    process_data(table_name=table_name, streaming=streaming, model=model)
-                    logger.info("Successfully downloaded and processed BOFIP CSV")
-                else:
-                    logger.info("Successfully downloaded BOFIP CSV")
-
-                log[data_source] = {
-                    "last_downloaded_file": "bofip.csv",
-                    "last_download_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                }
-
-                with open(data_history_path, "w") as file:
-                    json.dump(log, file, indent=4)
-                logger.info(f"Log config file successfully updated to {data_history_path}")
-
             else:
                 logger.error(f"Unknown type {attributes.get('type')} for {data_source}")
 
