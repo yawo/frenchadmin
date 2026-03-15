@@ -30,7 +30,8 @@ dependencies = [
     "apache-airflow==3.0.6",
     "apache-airflow-providers-apprise==2.1.2",
     "xxhash==3.5.0",
-    "transformers==4.57.3"
+    "transformers==4.57.3",
+    "sentence-transformers==3.4.1"
 ]
 
 [project.urls]

@@ -9,13 +9,11 @@ from typing import Generator, Optional
 import numpy as np
 import xxhash
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from openai import OpenAI, PermissionDeniedError
+from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
 from config import (
-    API_KEY,
-    API_URL,
     EMBEDDING_MODEL,
     SERVICE_PUBLIC_PART_DATA_FOLDER,
     SERVICE_PUBLIC_PRO_DATA_FOLDER,
@@ -29,6 +27,24 @@ from .sheets_parser import RagSource
 logger = get_logger(__name__)
 
 _tokenizer_cache = {}  # Cache of loaded tokenizers keyed by model name
+_embedding_model_cache = {}  # Cache of loaded SentenceTransformer models keyed by model name
+
+
+def _get_embedding_model(model: str = EMBEDDING_MODEL) -> SentenceTransformer:
+    """
+    Returns a cached SentenceTransformer model, downloading it from HuggingFace if needed.
+
+    Args:
+        model (str): HuggingFace model identifier. Defaults to EMBEDDING_MODEL.
+
+    Returns:
+        SentenceTransformer: The loaded embedding model.
+    """
+    global _embedding_model_cache
+    if model not in _embedding_model_cache:
+        logger.info(f"Loading embedding model '{model}' from HuggingFace...")
+        _embedding_model_cache[model] = SentenceTransformer(model)
+    return _embedding_model_cache[model]
 
 
 class CorpusHandler(ABC):
@@ -117,28 +133,20 @@ def generate_embeddings(
     data: str | list[str], model: str = EMBEDDING_MODEL
 ) -> list[float]:
     """
-    Generates embeddings for a given text using a specified model.
+    Generates embeddings for a given text using a HuggingFace model downloaded locally.
 
     Args:
         data (str or list[str]): The input to generate embeddings for.
-        model (str, optional): The model identifier to use for generating embeddings. Defaults to EMBEDDING_MODEL.
+        model (str, optional): The HuggingFace model identifier. Defaults to EMBEDDING_MODEL.
 
     Returns:
-        list[float]: The embedding vector for the input text.
-
-    Raises:
-        Any exceptions raised by the OpenAI client during the embedding generation process.
-
-    Note:
-        Requires properly configured API_URL and API_KEY for the OpenAI client.
+        list[list[float]]: A list of embedding vectors for the input text(s).
     """
-    client_openai = OpenAI(base_url=API_URL, api_key=API_KEY)
-    vector = client_openai.embeddings.create(
-        input=data, model=model, encoding_format="float"
-    )
-    embeddings = [item.embedding for item in vector.data]
-
-    return embeddings
+    if isinstance(data, str):
+        data = [data]
+    embedding_model = _get_embedding_model(model)
+    vectors = embedding_model.encode(data, convert_to_numpy=False)
+    return [v if isinstance(v, list) else list(v) for v in vectors]
 
 
 def generate_embeddings_with_retry(
@@ -150,22 +158,20 @@ def generate_embeddings_with_retry(
     """
     Generate embeddings for the provided data with retry mechanism.
 
-    This function attempts to generate embeddings and retries in case of failures.
-    It will immediately raise PermissionDeniedError if encountered, but retry for
-    other exceptions.
+    This function attempts to generate embeddings using the local HuggingFace model
+    and retries in case of failures.
 
     Args:
         data (str | list[str]): The text data to generate embeddings for.
             Can be a single string or a list of strings.
         attempts (int, optional): Maximum number of retry attempts. Defaults to 5.
-        model (str, optional): The embedding model to use. Defaults to EMBEDDING_MODEL.
-            Note: This parameter is passed to the function but not directly used.
+        model (str, optional): The HuggingFace embedding model to use. Defaults to EMBEDDING_MODEL.
+        time_sleep (int, optional): Seconds to wait between retries. Defaults to 60.
 
     Returns:
-        list[float]: The generated embeddings as a list of floating point numbers.
+        list[list[float]]: The generated embeddings as a list of float vectors.
 
     Raises:
-        PermissionDeniedError: If there's an API key issue (raised immediately without retrying).
         Exception: If embedding generation fails after all retry attempts.
     """
 
@@ -173,11 +179,6 @@ def generate_embeddings_with_retry(
         try:
             embeddings = generate_embeddings(data=data, model=model)
             return embeddings
-        except PermissionDeniedError as e:
-            logger.error(
-                f"PermissionDeniedError (API key issue). Unable to generate embeddings : {e}"
-            )
-            raise
         except Exception as e:
             if attempt == attempts - 1:  # If this is the last attempt
                 logger.error(
