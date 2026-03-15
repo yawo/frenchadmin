@@ -1,0 +1,123 @@
+steps:
+  # Build the application Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-app'
+    args:
+      - 'build'
+      - '--tag'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/mediatech:$COMMIT_SHA'
+      - '--tag'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/mediatech:latest'
+      - '--cache-from'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/mediatech:latest'
+      - '.'
+
+  # Push the application image to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-app'
+    args:
+      - 'push'
+      - '--all-tags'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/mediatech'
+
+  # Build the custom PostgreSQL/pgvector image
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-db'
+    args:
+      - 'build'
+      - '--tag'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/pgvector:$COMMIT_SHA'
+      - '--tag'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/pgvector:latest'
+      - '--cache-from'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/pgvector:latest'
+      - './db'
+
+  # Push the PostgreSQL image to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-db'
+    args:
+      - 'push'
+      - '--all-tags'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/pgvector'
+
+  # Deploy the data pipeline as a Cloud Run Job
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'deploy-pipeline-job'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'jobs'
+      - 'update'
+      - 'mediatech-pipeline'
+      - '--image'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/mediatech:$COMMIT_SHA'
+      - '--region'
+      - '${_REGION}'
+      - '--set-env-vars=RUNNING_IN_DOCKER=true'
+      - '--set-secrets'
+      - >-
+        POSTGRES_USER=mediatech-postgres-user:latest,
+        POSTGRES_PASSWORD=mediatech-postgres-password:latest,
+        POSTGRES_DB=mediatech-postgres-db:latest,
+        QDRANT_API_KEY=mediatech-qdrant-api-key:latest,
+        HF_TOKEN=mediatech-hf-token:latest,
+        API_KEY=mediatech-api-key:latest,
+        API_URL=mediatech-api-url:latest
+      - '--max-retries'
+      - '3'
+      - '--task-timeout'
+      - '3600s'  # Data pipeline tasks can take up to 1 hour per source
+    waitFor:
+      - 'push-app'
+
+  # Deploy the Airflow API server as a Cloud Run Service
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'deploy-airflow-api'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - 'mediatech-airflow-apiserver'
+      - '--image'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/mediatech:$COMMIT_SHA'
+      - '--region'
+      - '${_REGION}'
+      - '--platform'
+      - 'managed'
+      - '--no-allow-unauthenticated'
+      - '--port'
+      - '8080'
+      - '--command'
+      - 'airflow'
+      - '--args'
+      - 'api-server'
+      - '--set-env-vars=RUNNING_IN_DOCKER=true,AIRFLOW__CORE__EXECUTOR=LocalExecutor,AIRFLOW__CORE__LOAD_EXAMPLES=false'
+      - '--set-secrets'
+      - >-
+        POSTGRES_USER=mediatech-postgres-user:latest,
+        POSTGRES_PASSWORD=mediatech-postgres-password:latest,
+        POSTGRES_DB=mediatech-postgres-db:latest,
+        QDRANT_API_KEY=mediatech-qdrant-api-key:latest
+      - '--min-instances'
+      - '1'
+      - '--memory'
+      - '2Gi'
+      - '--cpu'
+      - '2'
+    waitFor:
+      - 'push-app'
+
+substitutions:
+  _REGION: europe-west1
+  _REPOSITORY: mediatech
+
+images:
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/mediatech:$COMMIT_SHA'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/mediatech:latest'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/pgvector:$COMMIT_SHA'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/pgvector:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_HIGHCPU_8'

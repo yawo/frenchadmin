@@ -21,6 +21,9 @@ x-airflow-common:
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
     RUNNING_IN_DOCKER: 'true'
+    QDRANT_HOST: qdrant
+    QDRANT_PORT: '6333'
+    QDRANT_API_KEY: ${QDRANT_API_KEY:-}
   volumes:
     - ./airflow_config/dags:/opt/airflow/dags
     - ./airflow_config/logs:/opt/airflow/logs
@@ -39,6 +42,8 @@ x-airflow-common:
   depends_on:
     &airflow-common-depends-on
     postgres:
+      condition: service_healthy
+    qdrant:
       condition: service_healthy
 
 services:
@@ -60,6 +65,22 @@ services:
     volumes:
       - pgvector_data:/var/lib/postgresql/data
       - ./database/sql_scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+  qdrant:
+    image: qdrant/qdrant:v1.14.2
+    container_name: qdrant_container
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:6333/healthz"]
+      interval: 10s
+      retries: 5
+      start_period: 10s
+    restart: always
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
+    ports:
+      - "127.0.0.1:${QDRANT_PORT:-6333}:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
 
   airflow-apiserver:
     <<: *airflow-common
@@ -223,3 +244,4 @@ services:
 
 volumes:
   pgvector_data:
+  qdrant_data:
