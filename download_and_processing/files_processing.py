@@ -10,7 +10,7 @@ import pandas as pd
 import xxhash
 from openai import PermissionDeniedError
 
-from config import BASE_PATH, SOURCE_MAP, config_file_path, get_logger
+from config import BASE_PATH, EMBEDDING_MODEL, SOURCE_MAP, config_file_path, get_logger
 from database import insert_data, refresh_table, remove_data
 from utils import (
     CheckpointManager,
@@ -159,7 +159,7 @@ def _process_data_gouv_content(
     logger.info(f"Successfully processed all {total_rows} rows")
 
 
-def process_data_gouv_files(table_name: str, model: str = "BAAI/bge-m3"):
+def process_data_gouv_files(table_name: str, model: str = EMBEDDING_MODEL):
     """
     Process data.gouv.fr files by generating embeddings and storing them in database.
     The workflow depends on the file.
@@ -169,7 +169,7 @@ def process_data_gouv_files(table_name: str, model: str = "BAAI/bge-m3"):
 
     Args:
         table_name (str): Name of the table to process
-        model (str): Model name for embedding generation. Defaults to "BAAI/bge-m3"
+        model (str): Model name for embedding generation. Defaults to EMBEDDING_MODEL
 
     """
     config = load_config(config_file_path=config_file_path)
@@ -477,7 +477,7 @@ def _process_directories_content(
     logger.info(f"Successfully processed all {total_entries} directory entries")
 
 
-def process_directories(table_name: str, model: str = "BAAI/bge-m3"):
+def process_directories(table_name: str, model: str = EMBEDDING_MODEL):
     """
     Processes directory data from JSON files specified in a configuration file, extracts and transforms relevant fields,
     generates embeddings for each directory, and inserts the processed data into a database.
@@ -487,7 +487,7 @@ def process_directories(table_name: str, model: str = "BAAI/bge-m3"):
 
     Args:
         table_name (str): The name of the table to process.
-        model (str): The identifier for the embedding model to use. Defaults to "BAAI/bge-m3".
+        model (str): The identifier for the embedding model to use. Defaults to EMBEDDING_MODEL.
     Raises:
         FileNotFoundError: If the configuration file or any specified directory JSON file is not found.
         json.JSONDecodeError: If there is an error decoding JSON from the configuration or data files.
@@ -670,7 +670,7 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
                 text=text_content,
                 chunk_size=1024,
                 chunk_overlap=0,
-                length_function="bge_m3_tokenizer",
+                length_function=model,
             )
             data_to_insert = []
 
@@ -939,7 +939,7 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
                 chunk_text = title
                 try:
                     embeddings = generate_embeddings_with_retry(
-                        data=chunk_text, attempts=5, model="BAAI/bge-m3"
+                        data=chunk_text, attempts=5, model=model
                     )[0]
                     chunk_index = 1  # Since there is only one chunk
                     content_type = "explanatory_memorandum"
@@ -982,7 +982,7 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
                         embeddings = generate_embeddings_with_retry(
                             data=chunk_text,
                             attempts=5,
-                            model="BAAI/bge-m3",
+                            model=model,
                         )[0]
                         content_type = "explanatory_memorandum"
                         chunk_id = f"{cid}_{chunk_index}"
@@ -1172,7 +1172,7 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
                             embeddings = generate_embeddings_with_retry(
                                 data=chunk_text,
                                 attempts=5,
-                                model="BAAI/bge-m3",
+                                model=model,
                             )[0]
 
                             new_data = (
@@ -1231,7 +1231,7 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
                             embeddings = generate_embeddings_with_retry(
                                 data=chunk_text,
                                 attempts=5,
-                                model="BAAI/bge-m3",
+                                model=model,
                             )[0]
 
                             new_data = (
@@ -1301,7 +1301,7 @@ def _handle_dila_suppression_list(lines: list[str], table_name: str, source_name
 
 
 def process_dila_xml_files(
-    source_path: str, streaming: bool = True, model: str = "BAAI/bge-m3"
+    source_path: str, streaming: bool = True, model: str = EMBEDDING_MODEL
 ):
     """Processes DILA XML files from a directory or a compressed archive.
 
@@ -1322,7 +1322,7 @@ def process_dila_xml_files(
         streaming (bool, optional): Determines the processing mode.
             Defaults to True.
         model (str, optional): The identifier for the embedding model to be
-            used in the underlying processing. Defaults to "BAAI/bge-m3".
+            used in the underlying processing. Defaults to EMBEDDING_MODEL.
     """
     checkpoint = CheckpointManager(source_path)
 
@@ -1642,7 +1642,7 @@ def _process_sheets_content(
 
 def process_sheets(
     table_name: str,
-    model: str = "BAAI/bge-m3",
+    model: str = EMBEDDING_MODEL,
     batch_size: int = 10,
 ):
     """
@@ -1664,7 +1664,7 @@ def process_sheets(
             structured=True,
             chunk_size=1024,
             chunk_overlap=0,
-            length_function="bge_m3_tokenizer",
+            length_function=model,
         )
         json_path = os.path.join(target_dir, "sheets_as_chunks.json")
         checkpoint = CheckpointManager(source_path=json_path)
@@ -1711,7 +1711,7 @@ def process_sheets(
         )
 
 
-def process_data(table_name: str, streaming: bool = True, model: str = "BAAI/bge-m3"):
+def process_data(table_name: str, streaming: bool = True, model: str = EMBEDDING_MODEL):
     """
     Processes data files located in the specified base folder according to its type.
     Depending on the value of `base_folder`, this function performs several operations.
@@ -1720,7 +1720,7 @@ def process_data(table_name: str, streaming: bool = True, model: str = "BAAI/bge
         table_name (str): The name of the table to process.
         streaming (bool, optional): If True, processes DILA archive files in streaming mode, without extraction (default: True).
         If False, extracts the archive files before processing.
-        model (str, optional): The model to use for processing (default: "BAAI/bge-m3").
+        model (str, optional): The model to use for processing (default: EMBEDDING_MODEL).
     """
     config = load_config(config_file_path=config_file_path)
     data_sources = config.get(table_name.lower(), {})
@@ -1893,7 +1893,7 @@ def process_data(table_name: str, streaming: bool = True, model: str = "BAAI/bge
 
 
 def process_all_data(
-    source_map: str = SOURCE_MAP, model: str = "BAAI/bge-m3", streaming: bool = True
+    source_map: str = SOURCE_MAP, model: str = EMBEDDING_MODEL, streaming: bool = True
 ):
     """
     Processes all data tables defined in the source map.

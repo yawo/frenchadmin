@@ -24,7 +24,7 @@ Commands:
 Options:
     --delete-existing       Delete existing tables before creating new ones
     --all                   Select all data sources from the data configuration file
-    --model=<model_name>    Embedding model name [default: BAAI/bge-m3]. It is mandatory to specify the same model for all commands.
+    --model=<model_name>    Embedding model name [default: louisbrulenaudet/lemone-embed-pro]. It is mandatory to specify the same model for all commands.
     --source=<source>       Source to process (service_public, travail_emploi, legi, cnil,
                             state_administrations_directory, local_administrations_directory, constit, dole)
     --table=<name>          Table name to export or split (legi, service_public, etc.)
@@ -39,12 +39,12 @@ Options:
     -h --help               Show this help message
 
 Examples:
-    main.py create_tables --model BAAI/bge-m3 --delete-existing
+    main.py create_tables --model louisbrulenaudet/lemone-embed-pro --delete-existing
     main.py download_files --all
-    main.py download_and_process_files --source service_public --model BAAI/bge-m3 --debug
-    main.py download_and_process_files --all --model BAAI/bge-m3
-    main.py process_files --source service_public --model BAAI/bge-m3
-    main.py process_files --all --folder data/unprocessed --model BAAI/bge-m3
+    main.py download_and_process_files --source service_public --model louisbrulenaudet/lemone-embed-pro --debug
+    main.py download_and_process_files --all --model louisbrulenaudet/lemone-embed-pro
+    main.py process_files --source service_public --model louisbrulenaudet/lemone-embed-pro
+    main.py process_files --all --folder data/unprocessed --model louisbrulenaudet/lemone-embed-pro
     main.py split_table --table legi
     main.py export_table --table legi --split
     main.py export_table --table all --output data/parquet
@@ -59,6 +59,7 @@ from docopt import docopt
 
 from config import (
     BASE_PATH,
+    EMBEDDING_MODEL,
     HF_TOKEN,
     SOURCE_MAP,
     config_file_path,
@@ -93,7 +94,7 @@ def main():
                 )
                 download_and_optionally_process_all_files(
                     process=False,
-                    model=args["--model"] if args["--model"] else "BAAI/bge-m3",
+                    model=args["--model"] if args["--model"] else EMBEDDING_MODEL,
                 )
             else:
                 source = args["--source"]
@@ -106,7 +107,7 @@ def main():
                     download_and_optionally_process_files(
                         table_name=source,
                         process=False,
-                        model=args["--model"] if args["--model"] else "BAAI/bge-m3",
+                        model=args["--model"] if args["--model"] else EMBEDDING_MODEL,
                     )
                 else:
                     logger.error(f"Unknown source: {source}")
@@ -121,7 +122,7 @@ def main():
                 )
                 download_and_optionally_process_all_files(
                     process=True,
-                    model=args["--model"] if args["--model"] else "BAAI/bge-m3",
+                    model=args["--model"] if args["--model"] else EMBEDDING_MODEL,
                 )
             else:
                 source = args["--source"]
@@ -133,7 +134,7 @@ def main():
                     download_and_optionally_process_files(
                         table_name=source,
                         process=True,
-                        model=args["--model"] if args["--model"] else "BAAI/bge-m3",
+                        model=args["--model"] if args["--model"] else EMBEDDING_MODEL,
                     )
                 else:
                     logger.error(f"Unknown source: {source}")
@@ -142,7 +143,7 @@ def main():
         # Create tables
         elif args["create_tables"]:
             delete_existing = True if args["--delete-existing"] else False
-            model = args["--model"] if args["--model"] else "BAAI/bge-m3"
+            model = args["--model"] if args["--model"] else EMBEDDING_MODEL
             logger.info(
                 f"Creating tables with model {model} (delete_existing={delete_existing})"
             )
@@ -150,7 +151,7 @@ def main():
 
         # Process data
         elif args["process_files"]:
-            model = args["--model"] if args["--model"] else "BAAI/bge-m3"
+            model = args["--model"] if args["--model"] else EMBEDDING_MODEL
             if args["--all"]:
                 folder = args["--folder"] or os.path.join(BASE_PATH, "data/unprocessed")
                 logger.info(f"Processing all unprocessed data from folder: {folder}")

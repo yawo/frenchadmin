@@ -111,5 +111,8 @@ DATA_GOUV_DATASETS_CATALOG_DATA_FOLDER = get_env_variable_path(
 API_URL = os.getenv("API_URL", "https://albert.api.etalab.gouv.fr/v1")
 API_KEY = os.getenv("API_KEY", "your_api_key_here")
 
+# Embedding model configuration
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "louisbrulenaudet/lemone-embed-pro")
+
 # Hugging Face configuration
 HF_TOKEN = os.getenv("HF_TOKEN", "your_hugging_face_token_here")
