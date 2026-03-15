@@ -117,8 +117,5 @@ LLM_MODEL = os.getenv("LLM_MODEL", "openrouter/hunter-alpha")
 # Embedding model configuration (downloaded and run locally via HuggingFace)
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "louisbrulenaudet/lemone-embed-pro")
 
-# Embedding model configuration
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
-
 # Hugging Face configuration
 HF_TOKEN = os.getenv("HF_TOKEN", "your_hugging_face_token_here")
