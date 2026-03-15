@@ -68,6 +68,7 @@ SOURCE_MAP = {
     ],
     "travail_emploi": ["travail_emploi"],
     "legi": ["legi"],
+    "jade": ["jade"],
     "cnil": ["cnil"],
     "state_administrations_directory": ["state_administrations_directory"],
     "local_administrations_directory": ["local_administrations_directory"],
@@ -90,6 +91,7 @@ STATE_ADMINISTRATIONS_DIRECTORY_FOLDER = get_env_variable_path(
     "data/unprocessed/state_administrations_directory",
 )
 DOLE_DATA_FOLDER = get_env_variable_path("DOLE_DATA_FOLDER", "data/unprocessed/dole")
+JADE_DATA_FOLDER = get_env_variable_path("JADE_DATA_FOLDER", "data/unprocessed/jade")
 LEGI_DATA_FOLDER = get_env_variable_path("LEGI_DATA_FOLDER", "data/unprocessed/legi")
 TRAVAIL_EMPLOI_DATA_FOLDER = get_env_variable_path(
     "TRAVAIL_EMPLOI_DATA_FOLDER", "data/unprocessed/travail_emploi"
@@ -114,6 +116,9 @@ LLM_MODEL = os.getenv("LLM_MODEL", "openrouter/hunter-alpha")
 
 # Embedding model configuration (downloaded and run locally via HuggingFace)
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "louisbrulenaudet/lemone-embed-pro")
+
+# Embedding model configuration
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
 
 # Hugging Face configuration
 HF_TOKEN = os.getenv("HF_TOKEN", "your_hugging_face_token_here")

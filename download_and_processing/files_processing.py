@@ -902,6 +902,95 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
             logger.error(f"Error processing file {file_name}: {e}")
             raise e
 
+    elif file_name.startswith("JADETEXT") and file_name.endswith(".xml"):
+        table_name = "jade"
+        try:
+            cid = root.find(".//ID").text
+            nature = root.find(".//NATURE").text if root.find(".//NATURE") is not None else None
+            title_elem = root.find(".//TITRE")
+            title = title_elem.text if title_elem is not None else None
+            number_elem = root.find(".//NUMERO")
+            number = number_elem.text if number_elem is not None else None
+            solution_elem = root.find(".//SOLUTION")
+            solution = solution_elem.text if solution_elem is not None else None
+            jurisdiction_elem = root.find(".//JURIDICTION")
+            jurisdiction = jurisdiction_elem.text if jurisdiction_elem is not None else None
+            formation_elem = root.find(".//FORMATION")
+            formation = formation_elem.text if formation_elem is not None else None
+
+            date_elem = root.find(".//DATE_DEC")
+            try:
+                decision_date = datetime.strptime(
+                    date_elem.text, "%Y-%m-%d"
+                ).strftime("%Y-%m-%d") if date_elem is not None and date_elem.text else None
+            except ValueError:
+                decision_date = date_elem.text if date_elem is not None else None
+
+            contenu = root.find(".//BLOC_TEXTUEL//CONTENU")
+            text_content = []
+
+            if contenu is not None:
+                content = ET.tostring(contenu, encoding="unicode", method="xml")
+                content = "".join(ET.fromstring(content).itertext())
+                lines = content.splitlines()
+                cleaned_lines = [line for line in lines if line]
+                content = "\n".join(cleaned_lines)
+                text_content.append(content)
+            text_content = "\n".join(text_content)
+
+            chunks = make_chunks(
+                text=text_content,
+                chunk_size=1500,
+                chunk_overlap=0,
+                length_function="len",
+            )
+            data_to_insert = []
+
+            for k, text in enumerate(chunks):
+                try:
+                    chunk_index = k + 1
+                    chunk_text = f"{title}\n{text}" if title else text
+
+                    chunk_xxh64 = xxhash.xxh64(
+                        chunk_text.encode("utf-8"), seed=2025
+                    ).hexdigest()
+
+                    embeddings = generate_embeddings_with_retry(
+                        data=chunk_text, attempts=5, model=model
+                    )[0]
+
+                    chunk_id = f"{cid}_{chunk_index}"
+
+                    new_data = (
+                        chunk_id,
+                        cid,
+                        chunk_index,
+                        chunk_xxh64,
+                        nature,
+                        solution,
+                        title,
+                        number,
+                        decision_date,
+                        jurisdiction,
+                        formation,
+                        text,
+                        chunk_text,
+                        embeddings,
+                    )
+                    data_to_insert.append(new_data)
+                except PermissionDeniedError as e:
+                    logger.error(
+                        f"PermissionDeniedError (API key issue) for chunk {chunk_index} of file {file_name}: {e}"
+                    )
+                    raise e
+
+            if data_to_insert:
+                insert_data(data=data_to_insert, table_name=table_name)
+
+        except Exception as e:
+            logger.error(f"Error processing file {file_name}: {e}")
+            raise e
+
     elif file_name.startswith("JORFDOLE") and file_name.endswith(".xml"):
         table_name = "dole"
         try:
