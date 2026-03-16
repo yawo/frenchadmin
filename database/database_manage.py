@@ -445,6 +445,24 @@ def create_all_tables(model=EMBEDDING_MODEL, delete_existing: bool = False):
                         )
                     """)
 
+                elif table_name.lower() == "bofip":
+                    cursor.execute(f"""
+                        CREATE TABLE BOFIP (
+                            chunk_id TEXT PRIMARY KEY,
+                            doc_id TEXT NOT NULL,
+                            chunk_index INTEGER NOT NULL,
+                            chunk_xxh64 TEXT NOT NULL,
+                            nature TEXT,
+                            category TEXT,
+                            title TEXT,
+                            date TEXT,
+                            text TEXT,
+                            chunk_text TEXT,
+                            "embeddings_{model_name}" vector({embedding_size}),
+                            UNIQUE(chunk_id)
+                        )
+                    """)
+
                 # Create HNSW index for vector similarity search
                 try:
                     if table_name.lower() not in CONFIG_TABLES:

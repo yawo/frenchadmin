@@ -13,6 +13,8 @@ if os.getenv("RUNNING_IN_DOCKER", "false").lower() == "true":
     postgres_port = "5432"
     qdrant_host = "qdrant"
     qdrant_port = "6333"
+    falkordb_host = "falkordb"
+    falkordb_port = "6379"
 else:
     # Locally, using relative paths
     base_path = "."
@@ -20,6 +22,8 @@ else:
     postgres_port = os.getenv("POSTGRES_PORT", "5433")
     qdrant_host = os.getenv("QDRANT_HOST", "localhost")
     qdrant_port = os.getenv("QDRANT_PORT", "6333")
+    falkordb_host = os.getenv("FALKORDB_HOST", "localhost")
+    falkordb_port = os.getenv("FALKORDB_PORT", "6379")
 
 
 # PostgreSQL configuration
@@ -34,6 +38,13 @@ QDRANT_HOST = qdrant_host
 QDRANT_PORT = int(qdrant_port)
 QDRANT_URL = f"http://{qdrant_host}:{qdrant_port}"
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", None)
+
+# FalkorDB configuration
+FALKORDB_HOST = falkordb_host
+FALKORDB_PORT = int(falkordb_port)
+FALKORDB_USERNAME = os.getenv("FALKORDB_USERNAME", None) or None
+FALKORDB_PASSWORD = os.getenv("FALKORDB_PASSWORD", None) or None
+FALKORDB_GRAPH_NAME = "frenchadmin"
 
 BASE_PATH = base_path
 

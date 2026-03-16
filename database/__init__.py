@@ -11,3 +11,15 @@ from .database_manage import (
     split_legi_table,
     sync_obsolete_doc_ids,
 )
+from .graph_manage import (
+    build_graphrag_knowledge_graph,
+    close_graph_connection,
+    init_graph_schema,
+    populate_graph_from_postgres,
+    upsert_bofip_chunk,
+    upsert_bofip_node,
+    upsert_jade_chunk,
+    upsert_jade_node,
+    upsert_legi_chunk,
+    upsert_legi_node,
+)

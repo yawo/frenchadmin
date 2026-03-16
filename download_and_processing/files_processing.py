@@ -12,6 +12,14 @@ from openai import PermissionDeniedError
 
 from config import BASE_PATH, EMBEDDING_MODEL, SOURCE_MAP, config_file_path, get_logger
 from database import insert_data, refresh_table, remove_data
+from database import (
+    upsert_bofip_chunk,
+    upsert_bofip_node,
+    upsert_jade_chunk,
+    upsert_jade_node,
+    upsert_legi_chunk,
+    upsert_legi_node,
+)
 from utils import (
     CheckpointManager,
     CorpusHandler,
@@ -728,6 +736,23 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
             if data_to_insert:
                 insert_data(data=data_to_insert, table_name=table_name)
 
+            # Populate the knowledge graph in parallel with PostgreSQL
+            upsert_legi_node(
+                doc_id=cid,
+                nature=nature,
+                category=category,
+                ministry=ministry,
+                status=status,
+                title=title,
+                full_title=full_title,
+                number=number,
+                start_date=start_date,
+                end_date=end_date,
+                links=links,
+            )
+            for chunk_id, *_ in data_to_insert:
+                upsert_legi_chunk(chunk_id=chunk_id, doc_id=cid)
+
         except Exception as e:
             logger.error(f"Error processing file {file_name}: {e}")
             raise e
@@ -986,6 +1011,20 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
 
             if data_to_insert:
                 insert_data(data=data_to_insert, table_name=table_name)
+
+            # Populate the knowledge graph in parallel with PostgreSQL
+            upsert_jade_node(
+                doc_id=cid,
+                nature=nature,
+                solution=solution,
+                title=title,
+                number=number,
+                decision_date=decision_date,
+                jurisdiction=jurisdiction,
+                formation=formation,
+            )
+            for chunk_id, *_ in data_to_insert:
+                upsert_jade_chunk(chunk_id=chunk_id, doc_id=cid)
 
         except Exception as e:
             logger.error(f"Error processing file {file_name}: {e}")
@@ -1352,6 +1391,98 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
             # Insert all chunks at once
             if data_to_insert:
                 insert_data(data=data_to_insert, table_name=table_name)
+
+        except Exception as e:
+            logger.error(f"Error processing file {file_name}: {e}")
+            raise e
+
+    elif file_name.startswith("BOFIPTEXT") and file_name.endswith(".xml"):
+        table_name = "bofip"
+        try:
+            cid = root.find(".//ID").text
+            nature_elem = root.find(".//NATURE")
+            nature = nature_elem.text if nature_elem is not None else None
+            title_elem = root.find(".//TITRE")
+            title = title_elem.text if title_elem is not None else None
+            category_elem = root.find(".//TYPE")
+            category = category_elem.text if category_elem is not None else None
+            date_elem = root.find(".//DATE_PUBLI") or root.find(".//DATE_TEXTE")
+            try:
+                date = (
+                    datetime.strptime(date_elem.text, "%Y-%m-%d").strftime("%Y-%m-%d")
+                    if date_elem is not None and date_elem.text
+                    else None
+                )
+            except ValueError:
+                date = date_elem.text if date_elem is not None else None
+
+            contenu = root.find(".//BLOC_TEXTUEL/CONTENU")
+            text_content = []
+            if contenu is not None:
+                content = ET.tostring(contenu, encoding="unicode", method="xml")
+                content = "".join(ET.fromstring(content).itertext())
+                lines = content.splitlines()
+                cleaned_lines = [line for line in lines if line]
+                content = "\n".join(cleaned_lines)
+                text_content.append(content)
+            text_content = "\n".join(text_content)
+
+            chunks = make_chunks(
+                text=text_content,
+                chunk_size=1024,
+                chunk_overlap=0,
+                length_function=model,
+            )
+            data_to_insert = []
+
+            for k, text in enumerate(chunks):
+                try:
+                    chunk_index = k + 1
+                    chunk_text = f"{title}\n{text}" if title else text
+
+                    chunk_xxh64 = xxhash.xxh64(
+                        chunk_text.encode("utf-8"), seed=2025
+                    ).hexdigest()
+
+                    embeddings = generate_embeddings_with_retry(
+                        data=chunk_text, attempts=5, model=model
+                    )[0]
+
+                    chunk_id = f"{cid}_{chunk_index}"
+
+                    new_data = (
+                        chunk_id,
+                        cid,
+                        chunk_index,
+                        chunk_xxh64,
+                        nature,
+                        category,
+                        title,
+                        date,
+                        text,
+                        chunk_text,
+                        embeddings,
+                    )
+                    data_to_insert.append(new_data)
+                except PermissionDeniedError as e:
+                    logger.error(
+                        f"PermissionDeniedError (API key issue) for chunk {chunk_index} of file {file_name}: {e}"
+                    )
+                    raise e
+
+            if data_to_insert:
+                insert_data(data=data_to_insert, table_name=table_name)
+
+            # Populate the knowledge graph in parallel with PostgreSQL
+            upsert_bofip_node(
+                doc_id=cid,
+                nature=nature,
+                category=category,
+                title=title,
+                date=date,
+            )
+            for chunk_id, *_ in data_to_insert:
+                upsert_bofip_chunk(chunk_id=chunk_id, doc_id=cid)
 
         except Exception as e:
             logger.error(f"Error processing file {file_name}: {e}")
@@ -1974,6 +2105,41 @@ def process_data(table_name: str, streaming: bool = True, model: str = EMBEDDING
                     logger.debug(
                         f"Folder: {current_dir} successfully removed after processing"
                     )
+        elif attributes.get("type") == "bofip":
+            # BOFIP archives follow the same DILA tgz format as dila_folder
+            logger.info(f"Processing BOFIP files located in: {base_folder}")
+            all_entities = sorted(
+                [f for f in os.listdir(base_folder) if f.endswith(".tgz") or f.endswith(".tar.gz")]
+            )
+            all_entities = [os.path.join(base_folder, f) for f in all_entities]
+
+            for entity in all_entities:
+                try:
+                    with tarfile.open(entity, "r:gz") as tar:
+                        for member in tar.getmembers():
+                            if member.isfile() and os.path.basename(
+                                member.name
+                            ).startswith("liste_suppression"):
+                                file_object = tar.extractfile(member)
+                                if file_object:
+                                    with file_object as f:
+                                        lines = f.read().decode("utf-8").splitlines()
+                                    _handle_dila_suppression_list(
+                                        lines=lines,
+                                        table_name=table_name,
+                                        source_name=entity,
+                                    )
+                                    break
+                except Exception as e:
+                    logger.error(
+                        f"Error while finding suppression list from archive {entity}: {e}"
+                    )
+                    continue
+
+                process_dila_xml_files(
+                    source_path=entity, streaming=True, model=model
+                )
+                logger.info(f"BOFIP file: {entity} successfully processed")
         else:
             logger.error(f"Unknown base folder '{base_folder}' for processing data.")
             raise ValueError(
