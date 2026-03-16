@@ -500,8 +500,8 @@ def download_and_optionally_process_files(
                         f"File : {data_source} is not a supported file, skipping download."
                     )
             
-            elif attributes.get("type") == "bofip_flux" and not is_update:
-                #TODO BOFIP STOCK
+            elif attributes.get("type") == "bofip":
+                
                 url = attributes.get("download_url", "")
                 download_folder = os.path.join(
                     BASE_PATH, attributes.get("download_folder", "")

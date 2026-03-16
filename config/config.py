@@ -68,6 +68,8 @@ SOURCE_MAP = {
     ],
     "travail_emploi": ["travail_emploi"],
     "legi": ["legi"],
+    "jade": ["jade"],
+    "bofip": ["bofip"],
     "cnil": ["cnil"],
     "state_administrations_directory": ["state_administrations_directory"],
     "local_administrations_directory": ["local_administrations_directory"],
@@ -90,6 +92,8 @@ STATE_ADMINISTRATIONS_DIRECTORY_FOLDER = get_env_variable_path(
     "data/unprocessed/state_administrations_directory",
 )
 DOLE_DATA_FOLDER = get_env_variable_path("DOLE_DATA_FOLDER", "data/unprocessed/dole")
+JADE_DATA_FOLDER = get_env_variable_path("JADE_DATA_FOLDER", "data/unprocessed/jade")
+BOFIP_DATA_FOLDER = get_env_variable_path("BOFIP_DATA_FOLDER", "data/unprocessed/bofip")
 LEGI_DATA_FOLDER = get_env_variable_path("LEGI_DATA_FOLDER", "data/unprocessed/legi")
 TRAVAIL_EMPLOI_DATA_FOLDER = get_env_variable_path(
     "TRAVAIL_EMPLOI_DATA_FOLDER", "data/unprocessed/travail_emploi"
@@ -107,11 +111,12 @@ DATA_GOUV_DATASETS_CATALOG_DATA_FOLDER = get_env_variable_path(
     "data/unprocessed/data_gouv_datasets_catalog",
 )
 
-# OpenAI API configuration
-API_URL = os.getenv("API_URL", "https://albert.api.etalab.gouv.fr/v1")
+# LLM API configuration (OpenRouter)
+API_URL = os.getenv("API_URL", "https://openrouter.ai/api/v1")
 API_KEY = os.getenv("API_KEY", "your_api_key_here")
+LLM_MODEL = os.getenv("LLM_MODEL", "openrouter/hunter-alpha")
 
-# Embedding model configuration
+# Embedding model configuration (downloaded and run locally via HuggingFace)
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "louisbrulenaudet/lemone-embed-pro")
 
 # Hugging Face configuration

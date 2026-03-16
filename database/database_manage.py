@@ -320,6 +320,28 @@ def create_all_tables(model=EMBEDDING_MODEL, delete_existing: bool = False):
                         )
                     """)
 
+                elif table_name.lower() == "bofip":
+                    cursor.execute(f"""
+                        CREATE TABLE BOFIP (
+                            chunk_id TEXT PRIMARY KEY,
+                            doc_id TEXT NOT NULL,
+                            chunk_index INTEGER NOT NULL,
+                            chunk_xxh64 TEXT NOT NULL,
+                            title TEXT,
+                            contenu_id TEXT,
+                            contenu_type TEXT,
+                            document_number TEXT,
+                            bofip_url TEXT,
+                            publication_date TEXT,
+                            subjects TEXT[],
+                            category_path TEXT,
+                            text TEXT,
+                            chunk_text TEXT,
+                            "embeddings_{model_name}" vector({embedding_size}),
+                            UNIQUE(chunk_id)
+                        )
+                    """)
+
                 elif table_name.lower() == "dole":
                     cursor.execute(f"""
                         CREATE TABLE DOLE (
@@ -362,6 +384,27 @@ def create_all_tables(model=EMBEDDING_MODEL, delete_existing: bool = False):
                             end_date TEXT,
                             nota TEXT,
                             links JSONB,
+                            text TEXT,
+                            chunk_text TEXT,
+                            "embeddings_{model_name}" vector({embedding_size}),
+                            UNIQUE(chunk_id)
+                        )
+                    """)
+
+                elif table_name.lower() == "jade":
+                    cursor.execute(f"""
+                        CREATE TABLE JADE (
+                            chunk_id TEXT PRIMARY KEY,
+                            doc_id TEXT NOT NULL,
+                            chunk_index INTEGER NOT NULL,
+                            chunk_xxh64 TEXT NOT NULL,
+                            nature TEXT,
+                            solution TEXT,
+                            title TEXT,
+                            number TEXT,
+                            decision_date TEXT,
+                            jurisdiction TEXT,
+                            formation TEXT,
                             text TEXT,
                             chunk_text TEXT,
                             "embeddings_{model_name}" vector({embedding_size}),
@@ -1259,7 +1302,9 @@ def insert_data(data: list, table_name: str, model=EMBEDDING_MODEL):
             "CNIL",
             "CONSTIT",
             "DOLE",
-        ]:  # Only for data having a DILA cid (doc_id)
+            "JADE",
+            "BOFIP",
+        ]:  # Only for data having a stable doc_id (DILA cid or BOFiP contenu_id)
             # Delete the existing data for the same doc_id in order to avoid duplicates and outdated data
             source_doc_id = data[0][
                 1
@@ -1416,6 +1461,45 @@ def insert_data(data: list, table_name: str, model=EMBEDDING_MODEL):
                 end_date = EXCLUDED.end_date,
                 nota = EXCLUDED.nota,
                 links = EXCLUDED.links,
+                text = EXCLUDED.text,
+                chunk_text = EXCLUDED.chunk_text,
+                "embeddings_{model_name}" = EXCLUDED."embeddings_{model_name}";
+            """
+        elif table_name.lower() == "jade":
+            insert_query = f"""
+                INSERT INTO JADE (chunk_id, doc_id, chunk_index, chunk_xxh64, nature, solution, title, number, decision_date, jurisdiction, formation, text, chunk_text, "embeddings_{model_name}")
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (chunk_id) DO UPDATE SET
+                doc_id = EXCLUDED.doc_id,
+                chunk_index = EXCLUDED.chunk_index,
+                chunk_xxh64 = EXCLUDED.chunk_xxh64,
+                nature = EXCLUDED.nature,
+                solution = EXCLUDED.solution,
+                title = EXCLUDED.title,
+                number = EXCLUDED.number,
+                decision_date = EXCLUDED.decision_date,
+                jurisdiction = EXCLUDED.jurisdiction,
+                formation = EXCLUDED.formation,
+                text = EXCLUDED.text,
+                chunk_text = EXCLUDED.chunk_text,
+                "embeddings_{model_name}" = EXCLUDED."embeddings_{model_name}";
+            """
+        elif table_name.lower() == "bofip":
+            insert_query = f"""
+                INSERT INTO BOFIP (chunk_id, doc_id, chunk_index, chunk_xxh64, title, contenu_id, contenu_type, document_number, bofip_url, publication_date, subjects, category_path, text, chunk_text, "embeddings_{model_name}")
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (chunk_id) DO UPDATE SET
+                doc_id = EXCLUDED.doc_id,
+                chunk_index = EXCLUDED.chunk_index,
+                chunk_xxh64 = EXCLUDED.chunk_xxh64,
+                title = EXCLUDED.title,
+                contenu_id = EXCLUDED.contenu_id,
+                contenu_type = EXCLUDED.contenu_type,
+                document_number = EXCLUDED.document_number,
+                bofip_url = EXCLUDED.bofip_url,
+                publication_date = EXCLUDED.publication_date,
+                subjects = EXCLUDED.subjects,
+                category_path = EXCLUDED.category_path,
                 text = EXCLUDED.text,
                 chunk_text = EXCLUDED.chunk_text,
                 "embeddings_{model_name}" = EXCLUDED."embeddings_{model_name}";
