@@ -8,6 +8,7 @@ from datetime import datetime
 
 import pandas as pd
 import xxhash
+from bs4 import BeautifulSoup
 from openai import PermissionDeniedError
 
 from config import BASE_PATH, EMBEDDING_MODEL, SOURCE_MAP, config_file_path, get_logger
@@ -1800,6 +1801,429 @@ def process_sheets(
         )
 
 
+def _parse_bofip_path(file_path: str) -> dict:
+    """
+    Parse the path of a file inside a BOFiP archive to extract taxonomy information.
+
+    BOFiP archives follow this directory hierarchy::
+
+        BOFiP/documents/Contenu/{document_type}/[{domain}/]{document_number}/{version_date}/
+
+    The version-date directory is always the deepest directory and its siblings are
+    ``document.xml`` and ``data.html``.
+
+    Args:
+        file_path (str): Path of the file inside the archive (e.g.,
+            ``"BOFiP/documents/Contenu/Formulaire/BA/14604-PGP/2025-07-23/document.xml"``).
+
+    Returns:
+        dict: Dictionary with keys: ``category_path``, ``document_type``, ``domain``,
+            ``document_number``, ``version_date``.
+    """
+    parts = file_path.replace("\\", "/").split("/")
+    # Strip the filename (document.xml or data.html)
+    dir_parts = parts[:-1]
+
+    # Locate "Contenu" in the path
+    contenu_idx = next(
+        (i for i, p in enumerate(dir_parts) if p == "Contenu"), None
+    )
+
+    if contenu_idx is None:
+        return {
+            "category_path": "/".join(dir_parts),
+            "document_type": None,
+            "domain": None,
+            "document_number": dir_parts[-2] if len(dir_parts) >= 2 else None,
+            "version_date": dir_parts[-1] if dir_parts else None,
+        }
+
+    # Levels after "Contenu": [doc_type, [domain, ...], doc_number, version_date]
+    post_contenu = dir_parts[contenu_idx + 1 :]
+    version_date = post_contenu[-1] if post_contenu else None
+    document_number = post_contenu[-2] if len(post_contenu) >= 2 else None
+    document_type = post_contenu[0] if post_contenu else None
+    # Domain is the level immediately after document_type when there are ≥ 4 levels
+    domain = post_contenu[1] if len(post_contenu) >= 4 else None
+
+    # category_path: from "documents/" onward (excluding the filename)
+    docs_idx = next(
+        (i for i, p in enumerate(dir_parts) if p.lower() == "documents"), contenu_idx
+    )
+    category_path = "/".join(dir_parts[docs_idx:])
+
+    return {
+        "category_path": category_path,
+        "document_type": document_type,
+        "domain": domain,
+        "document_number": document_number,
+        "version_date": version_date,
+    }
+
+
+def _process_bofip_document(
+    xml_content: bytes,
+    html_content: bytes,
+    file_path: str,
+    model: str,
+) -> list:
+    """
+    Process a single BOFiP document pair (``document.xml`` + ``data.html``), extract
+    metadata and text, generate an embedding, and return a list containing the data
+    row ready for database insertion.
+
+    The whole ``data.html`` content is used as a single chunk to preserve the full
+    context of each tax document (no further text splitting).
+
+    BOFiP ``document.xml`` uses two XML namespaces:
+
+    - **Dublin Core** (``dc:``) — title, date, creator, subjects, identifiers.
+    - **BOFiP** (``bofip:``) — ``contenu_id`` (canonical identifier) and
+      ``contenu_type`` (document category).
+
+    Args:
+        xml_content (bytes): Raw bytes of ``document.xml``.
+        html_content (bytes): Raw bytes of ``data.html``.
+        file_path (str): Path of ``document.xml`` inside the archive, used to
+            derive the taxonomy path.
+        model (str): Embedding model identifier.
+
+    Returns:
+        list: A list containing a single tuple ready for insertion into the BOFIP table.
+
+    Raises:
+        PermissionDeniedError: Re-raised when the embedding API key is rejected.
+    """
+    DC = "{http://purl.org/dc/elements/1.1}"
+    BOFIP_NS = "{https://bofip.impots.gouv.fr}"
+
+    # ── XML metadata ────────────────────────────────────────────────────────
+    xml_root = ET.fromstring(xml_content)
+
+    title = xml_root.findtext(f".//{DC}title")
+    publication_date = xml_root.findtext(f".//{DC}date")
+
+    # dc:identifier appears twice: first is the document number, second is the URL
+    identifiers = [el.text for el in xml_root.findall(f".//{DC}identifier") if el.text]
+    document_number = None
+    bofip_url = None
+    for id_val in identifiers:
+        if id_val.startswith("http"):
+            bofip_url = id_val
+        else:
+            document_number = id_val
+
+    # dc:subject may repeat; deduplicate while preserving order
+    seen: set[str] = set()
+    subjects = []
+    for el in xml_root.findall(f".//{DC}subject"):
+        if el.text and el.text not in seen:
+            seen.add(el.text)
+            subjects.append(el.text)
+
+    contenu_id = xml_root.findtext(f".//{BOFIP_NS}contenu_id")
+    contenu_type = xml_root.findtext(f".//{BOFIP_NS}contenu_type")
+
+    # Canonical document ID: prefer contenu_id, then extract from URL, then fallback
+    if contenu_id:
+        doc_id = contenu_id
+    elif bofip_url and "identifiant=" in bofip_url:
+        doc_id = bofip_url.split("identifiant=")[-1]
+    elif document_number:
+        doc_id = document_number
+    else:
+        doc_id = (
+            file_path.replace("/document.xml", "").replace("\\", "/").replace("/", "_")
+        )
+
+    # ── Path-derived taxonomy info ───────────────────────────────────────────
+    path_info = _parse_bofip_path(file_path)
+    category_path = path_info.get("category_path")
+
+    # ── HTML → plain text ───────────────────────────────────────────────────
+    soup = BeautifulSoup(html_content, "lxml")
+    raw_text = soup.get_text(separator="\n", strip=True)
+    lines = [line for line in raw_text.splitlines() if line.strip()]
+    text = "\n".join(lines)
+
+    # ── Enriched chunk_text for embedding ───────────────────────────────────
+    chunk_text_parts = []
+    if title:
+        chunk_text_parts.append(title)
+    if contenu_type:
+        chunk_text_parts.append(f"Type: {contenu_type}")
+    if subjects:
+        chunk_text_parts.append(f"Domaine: {', '.join(subjects)}")
+    if category_path:
+        chunk_text_parts.append(f"Chemin: {category_path}")
+    if publication_date:
+        chunk_text_parts.append(f"Date de publication: {publication_date}")
+    if text:
+        chunk_text_parts.append(text)
+    chunk_text = "\n".join(chunk_text_parts)
+
+    chunk_index = 1  # Whole document = one chunk
+    chunk_id = f"{doc_id}_{chunk_index}"
+    chunk_xxh64 = xxhash.xxh64(chunk_text.encode("utf-8"), seed=2025).hexdigest()
+
+    try:
+        embeddings = generate_embeddings_with_retry(
+            data=chunk_text, attempts=5, model=model
+        )[0]
+    except PermissionDeniedError as e:
+        logger.error(f"PermissionDeniedError generating embedding for {doc_id}: {e}")
+        raise
+
+    new_data = (
+        chunk_id,        # PRIMARY KEY
+        doc_id,          # bofip:contenu_id (canonical identifier)
+        chunk_index,     # 1 — one chunk per document
+        chunk_xxh64,     # xxhash of chunk_text
+        title,           # dc:title
+        contenu_id,      # bofip:contenu_id
+        contenu_type,    # bofip:contenu_type
+        document_number, # first dc:identifier (e.g. "6551-PGP")
+        bofip_url,       # second dc:identifier (source URL)
+        publication_date,  # dc:date
+        subjects,        # deduplicated dc:subject values
+        category_path,   # full taxonomy path from the archive
+        text,            # plain text extracted from data.html
+        chunk_text,      # enriched text used for embedding
+        embeddings,      # embedding vector
+    )
+
+    return [new_data]
+
+
+def _process_bofip_tgz(
+    tgz_path: str,
+    table_name: str,
+    checkpoint: CheckpointManager,
+    last_processed_index: int,
+    model: str,
+):
+    """
+    Process a single BOFiP ``.tgz`` archive and insert all documents into the database.
+
+    The function walks the archive looking for directories that contain both
+    ``document.xml`` and ``data.html``. For each such directory it parses the XML
+    metadata and the HTML content, generates a single embedding (whole-document chunk),
+    and inserts the resulting row. A checkpoint is saved after each successful insertion
+    so the run can be safely resumed from the last processed document.
+
+    The archive file is removed once all documents have been processed successfully.
+
+    Args:
+        tgz_path (str): Absolute path to the ``.tgz`` archive.
+        table_name (str): Database table to insert into (``"bofip"``).
+        checkpoint (CheckpointManager): Checkpoint manager for this archive.
+        last_processed_index (int): Index of the last successfully processed
+            document (-1 = start from the beginning).
+        model (str): Embedding model identifier.
+
+    Raises:
+        PermissionDeniedError: Re-raised immediately (unrecoverable API error).
+        Exception: Any other unrecoverable error encountered during processing.
+    """
+    try:
+        with tarfile.open(tgz_path, "r:gz") as tar:
+            all_members = tar.getmembers()
+
+            # Build a mapping: directory path → {filename: TarInfo member}
+            dir_to_files: dict[str, dict[str, tarfile.TarInfo]] = {}
+            for member in all_members:
+                if not member.isfile():
+                    continue
+                norm_name = member.name.replace("\\", "/")
+                parts = norm_name.split("/")
+                dir_path = "/".join(parts[:-1])
+                filename = parts[-1]
+                dir_to_files.setdefault(dir_path, {})[filename] = member
+
+            # Collect and sort all leaf directories containing both required files
+            document_dirs = sorted(
+                dir_path
+                for dir_path, files in dir_to_files.items()
+                if "document.xml" in files and "data.html" in files
+            )
+
+            total_docs = len(document_dirs)
+            logger.info(
+                f"Found {total_docs} document(s) in {os.path.basename(tgz_path)}, "
+                f"starting from index {last_processed_index + 1}"
+            )
+
+            for idx, dir_path in enumerate(document_dirs):
+                if idx <= last_processed_index:
+                    continue
+
+                xml_member = dir_to_files[dir_path]["document.xml"]
+                html_member = dir_to_files[dir_path]["data.html"]
+                xml_path = xml_member.name
+
+                try:
+                    xml_obj = tar.extractfile(xml_member)
+                    html_obj = tar.extractfile(html_member)
+
+                    if xml_obj is None or html_obj is None:
+                        logger.warning(
+                            f"Skipping {dir_path}: could not extract file object"
+                        )
+                        checkpoint.save(
+                            idx, metadata={"dir": dir_path, "skipped": True}
+                        )
+                        continue
+
+                    with xml_obj as xf, html_obj as hf:
+                        xml_content = xf.read()
+                        html_content = hf.read()
+
+                    data_to_insert = _process_bofip_document(
+                        xml_content=xml_content,
+                        html_content=html_content,
+                        file_path=xml_path,
+                        model=model,
+                    )
+
+                    if data_to_insert:
+                        insert_data(data=data_to_insert, table_name=table_name)
+
+                    checkpoint.save(
+                        idx,
+                        metadata={
+                            "dir": dir_path,
+                            "doc_id": data_to_insert[0][1] if data_to_insert else None,
+                        },
+                    )
+
+                    if idx > 0 and idx % 100 == 0:
+                        gc.collect()
+
+                except ET.ParseError as e:
+                    logger.error(f"XML parse error for {dir_path}: {e}")
+                    checkpoint.save(
+                        idx, metadata={"dir": dir_path, "error": "parse_error"}
+                    )
+                    continue
+                except PermissionDeniedError as e:
+                    logger.error(
+                        f"PermissionDeniedError processing {dir_path}: {e}"
+                    )
+                    raise
+                except Exception as e:
+                    logger.error(f"Error processing document at {dir_path}: {e}")
+                    logger.error("Progress saved. Restart to resume from this point.")
+                    raise
+
+        # All documents processed successfully
+        checkpoint.remove()
+        logger.info(
+            f"Successfully processed all {total_docs} documents "
+            f"from {os.path.basename(tgz_path)}"
+        )
+
+    except Exception as e:
+        logger.error(f"Error processing BOFiP archive {tgz_path}: {e}")
+        raise
+    finally:
+        if not checkpoint.exists():
+            remove_file(file_path=tgz_path)
+            logger.info(f"Archive removed: {tgz_path}")
+        else:
+            logger.info(f"Archive kept for resume: {tgz_path}")
+        gc.collect()
+
+
+def process_bofip_files(table_name: str, model: str = EMBEDDING_MODEL):
+    """
+    Process all BOFiP ``.tgz`` archives found in the configured download folder.
+
+    BOFiP archives come in two types:
+
+    - **Stock** files (``bofip_stock_*.tgz``): Full snapshot of current doctrinal
+      content. Processed first; triggers a table refresh when starting from scratch
+      so that documents deleted from the official corpus are removed from the database.
+    - **Flux** files (``bofip_flux_*.tgz``): Incremental weekly updates. Processed
+      after stock files in chronological (filename) order.
+
+    Each archive contains a hierarchical ``BOFiP/`` directory where every leaf
+    directory holds exactly two files: ``document.xml`` (metadata) and ``data.html``
+    (document content). The whole HTML is preserved as a single chunk.
+
+    A checkpoint file is saved after each document so that interrupted runs can be
+    resumed without reprocessing already-inserted documents.
+
+    Args:
+        table_name (str): Name of the database table to insert into (``"bofip"``).
+        model (str): Embedding model identifier. Defaults to ``EMBEDDING_MODEL``.
+    """
+    config = load_config(config_file_path=config_file_path)
+    data_sources = config.get(table_name.lower(), {})
+
+    for data_source, attributes in data_sources.items():
+        base_folder = os.path.join(BASE_PATH, attributes.get("download_folder", ""))
+
+        if not os.path.isdir(base_folder):
+            logger.warning(f"BOFiP download folder not found: {base_folder}")
+            continue
+
+        # Collect all BOFiP tgz archives in the folder
+        all_tgz = sorted(
+            f
+            for f in os.listdir(base_folder)
+            if f.startswith("bofip_") and f.endswith(".tgz")
+        )
+
+        if not all_tgz:
+            logger.info(f"No BOFiP archives found in {base_folder}")
+            continue
+
+        # Stock files first (full baseline), then flux files (incremental)
+        stock_files = sorted(f for f in all_tgz if "_stock_" in f)
+        flux_files = sorted(f for f in all_tgz if "_flux_" in f)
+        ordered_files = stock_files + flux_files
+
+        logger.info(
+            f"Found {len(stock_files)} stock and {len(flux_files)} flux "
+            f"BOFiP archive(s) in {base_folder}"
+        )
+
+        for tgz_file in ordered_files:
+            tgz_path = os.path.join(base_folder, tgz_file)
+            checkpoint = CheckpointManager(tgz_path)
+            last_processed_index = checkpoint.load()
+            is_stock = "_stock_" in tgz_file
+
+            logger.info(
+                f"Processing BOFiP archive: {tgz_file} "
+                f"(type={'stock' if is_stock else 'flux'}, "
+                f"resuming from index {last_processed_index + 1})"
+            )
+
+            if last_processed_index == -1 and is_stock:
+                # First run with a stock file: refresh the table so stale documents
+                # that were removed from the official corpus are cleaned up.
+                logger.info(
+                    f"Refreshing table '{table_name}' before processing stock file"
+                )
+                with refresh_table(table_name, model):
+                    _process_bofip_tgz(
+                        tgz_path=tgz_path,
+                        table_name=table_name,
+                        checkpoint=checkpoint,
+                        last_processed_index=last_processed_index,
+                        model=model,
+                    )
+            else:
+                _process_bofip_tgz(
+                    tgz_path=tgz_path,
+                    table_name=table_name,
+                    checkpoint=checkpoint,
+                    last_processed_index=last_processed_index,
+                    model=model,
+                )
+
+
 def process_data(table_name: str, streaming: bool = True, model: str = EMBEDDING_MODEL):
     """
     Processes data files located in the specified base folder according to its type.
@@ -1863,6 +2287,11 @@ def process_data(table_name: str, streaming: bool = True, model: str = EMBEDDING
                 )
             else:
                 pass
+
+        elif attributes.get("type") == "bofip":
+            logger.info(f"Processing BOFiP files located in: {base_folder}")
+            process_bofip_files(table_name=table_name, model=model)
+            logger.info(f"BOFiP files in {base_folder} successfully processed")
 
         elif attributes.get("type") == "dila_folder":
             if streaming:
