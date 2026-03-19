@@ -335,6 +335,7 @@ def create_all_tables(model=EMBEDDING_MODEL, delete_existing: bool = False):
                             publication_date TEXT,
                             subjects TEXT[],
                             category_path TEXT,
+                            links JSONB,
                             text TEXT,
                             chunk_text TEXT,
                             "embeddings_{model_name}" vector({embedding_size}),
@@ -1486,8 +1487,8 @@ def insert_data(data: list, table_name: str, model=EMBEDDING_MODEL):
             """
         elif table_name.lower() == "bofip":
             insert_query = f"""
-                INSERT INTO BOFIP (chunk_id, doc_id, chunk_index, chunk_xxh64, title, contenu_id, contenu_type, document_number, bofip_url, publication_date, subjects, category_path, text, chunk_text, "embeddings_{model_name}")
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO BOFIP (chunk_id, doc_id, chunk_index, chunk_xxh64, title, contenu_id, contenu_type, document_number, bofip_url, publication_date, subjects, category_path, links, text, chunk_text, "embeddings_{model_name}")
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (chunk_id) DO UPDATE SET
                 doc_id = EXCLUDED.doc_id,
                 chunk_index = EXCLUDED.chunk_index,
@@ -1500,6 +1501,7 @@ def insert_data(data: list, table_name: str, model=EMBEDDING_MODEL):
                 publication_date = EXCLUDED.publication_date,
                 subjects = EXCLUDED.subjects,
                 category_path = EXCLUDED.category_path,
+                links = EXCLUDED.links,
                 text = EXCLUDED.text,
                 chunk_text = EXCLUDED.chunk_text,
                 "embeddings_{model_name}" = EXCLUDED."embeddings_{model_name}";

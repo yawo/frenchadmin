@@ -1877,9 +1877,17 @@ def _process_bofip_document(
 
     BOFiP ``document.xml`` uses two XML namespaces:
 
-    - **Dublin Core** (``dc:``) — title, date, creator, subjects, identifiers.
+    - **Dublin Core** (``dc:``) — title, date, creator, subjects, identifiers,
+      and ``dc:relation`` elements that carry internal links/references to other
+      BOFiP documents.
     - **BOFiP** (``bofip:``) — ``contenu_id`` (canonical identifier) and
       ``contenu_type`` (document category).
+
+    Each ``dc:relation`` element has a ``type`` attribute (``"references"``,
+    ``"isReferencedBy"``, ``"requires"``, or ``"isRequiredBy"``) and a text value
+    structured as ``<Nature>.<DocumentType>:<identifier>``
+    (e.g. ``"Contenu.Commentaire:389-PGP"``).  All relations are collected into a
+    JSON array and stored in the ``links`` column.
 
     Args:
         xml_content (bytes): Raw bytes of ``document.xml``.
@@ -1920,6 +1928,41 @@ def _process_bofip_document(
         if el.text and el.text not in seen:
             seen.add(el.text)
             subjects.append(el.text)
+
+    # dc:relation contains internal links/references to other BOFiP documents.
+    # Each element has a "type" attribute (e.g. "references", "isReferencedBy",
+    # "requires", "isRequiredBy") and a text value structured as:
+    #   <Nature>.<DocumentType>:<identifier>
+    # e.g. "Contenu.Commentaire:389-PGP"
+    links = []
+    for el in xml_root.findall(f".//{DC}relation"):
+        relation_type = el.get("type")
+        value = el.text.strip() if el.text else None
+        if not value:
+            continue
+        nature = None
+        document_type = None
+        doc_ref_id = None
+        if "." in value and ":" in value:
+            # Format: <Nature>.<DocumentType>:<identifier>
+            # e.g. "Contenu.Autres annexes:1077-PGP"
+            # Use partition to split on the first "." and first ":"
+            before_dot, dot_found, after_dot = value.partition(".")
+            if dot_found:
+                doc_type_part, colon_found, identifier = after_dot.partition(":")
+                if colon_found:
+                    nature = before_dot
+                    document_type = doc_type_part
+                    doc_ref_id = identifier
+        links.append(
+            {
+                "type": relation_type,
+                "nature": nature,
+                "document_type": document_type,
+                "id": doc_ref_id,
+                "value": value,
+            }
+        )
 
     contenu_id = xml_root.findtext(f".//{BOFIP_NS}contenu_id")
     contenu_type = xml_root.findtext(f".//{BOFIP_NS}contenu_type")
@@ -1975,21 +2018,22 @@ def _process_bofip_document(
         raise
 
     new_data = (
-        chunk_id,        # PRIMARY KEY
-        doc_id,          # bofip:contenu_id (canonical identifier)
-        chunk_index,     # 1 — one chunk per document
-        chunk_xxh64,     # xxhash of chunk_text
-        title,           # dc:title
-        contenu_id,      # bofip:contenu_id
-        contenu_type,    # bofip:contenu_type
-        document_number, # first dc:identifier (e.g. "6551-PGP")
-        bofip_url,       # second dc:identifier (source URL)
+        chunk_id,          # PRIMARY KEY
+        doc_id,            # bofip:contenu_id (canonical identifier)
+        chunk_index,       # 1 — one chunk per document
+        chunk_xxh64,       # xxhash of chunk_text
+        title,             # dc:title
+        contenu_id,        # bofip:contenu_id
+        contenu_type,      # bofip:contenu_type
+        document_number,   # first dc:identifier (e.g. "6551-PGP")
+        bofip_url,         # second dc:identifier (source URL)
         publication_date,  # dc:date
-        subjects,        # deduplicated dc:subject values
-        category_path,   # full taxonomy path from the archive
-        text,            # plain text extracted from data.html
-        chunk_text,      # enriched text used for embedding
-        embeddings,      # embedding vector
+        subjects,          # deduplicated dc:subject values
+        category_path,     # full taxonomy path from the archive
+        json.dumps(links, ensure_ascii=False),  # dc:relation links
+        text,              # plain text extracted from data.html
+        chunk_text,        # enriched text used for embedding
+        embeddings,        # embedding vector
     )
 
     return [new_data]
