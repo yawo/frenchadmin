@@ -667,65 +667,58 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
                 text_content.append(content)
             text_content = "\n".join(text_content)
 
-            chunks = make_chunks(
-                text=text_content,
-                chunk_size=1024,
-                chunk_overlap=0,
-                length_function=model,
-            )
             data_to_insert = []
 
-            for k, text in enumerate(chunks):
-                try:
-                    chunk_index = k + 1  # Start chunk numbering from 1
-                    chunk_text = f"{full_title}"
-                    if number:
-                        chunk_text += f" - Article {number}"
-                    # Adding subtitles only if the text is long enough
-                    if subtitles and len(text) > 200:
-                        context = format_subtitles(subtitles=subtitles)
-                        if context and len(context) < len(text):
-                            chunk_text += f"\n{context}"  # Augment the chunk text with subtitles concepts
-                    chunk_text += f"\n{text}"
+            try:
+                chunk_index = 1  # Whole document = one chunk
+                chunk_text = f"{full_title}"
+                if number:
+                    chunk_text += f" - Article {number}"
+                # Adding subtitles only if the text is long enough
+                if subtitles and len(text_content) > 200:
+                    context = format_subtitles(subtitles=subtitles)
+                    if context and len(context) < len(text_content):
+                        chunk_text += f"\n{context}"  # Augment the chunk text with subtitles concepts
+                chunk_text += f"\n{text_content}"
 
-                    chunk_xxh64 = xxhash.xxh64(
-                        chunk_text.encode("utf-8"), seed=2025
-                    ).hexdigest()
+                chunk_xxh64 = xxhash.xxh64(
+                    chunk_text.encode("utf-8"), seed=2025
+                ).hexdigest()
 
-                    embeddings = generate_embeddings_with_retry(
-                        data=chunk_text, attempts=5, model=model
-                    )[0]
-                    chunk_id = f"{cid}_{chunk_index}"  # Unique ID for each chunk
+                embeddings = generate_embeddings_with_retry(
+                    data=chunk_text, attempts=5, model=model
+                )[0]
+                chunk_id = f"{cid}_{chunk_index}"  # Unique ID for the chunk
 
-                    new_data = (
-                        chunk_id,  # Primary key
-                        cid,  # Original document ID
-                        chunk_index,  # Chunk number
-                        chunk_xxh64,  # Hash of chunk_text
-                        nature,
-                        category,
-                        ministry,
-                        status,
-                        title,
-                        full_title,
-                        subtitles,
-                        number,
-                        start_date,
-                        end_date,
-                        nota,
-                        json.dumps(links),  # Convert links to JSON string
-                        text,  # Original text
-                        chunk_text,  # Augmented text for better search
-                        embeddings,  # Embedding of chunk_text
-                    )
-                    data_to_insert.append(new_data)
-                except PermissionDeniedError as e:
-                    logger.error(
-                        f"PermissionDeniedError (API key issue) for chunk {chunk_index} of file {file_name}: {e}"
-                    )
-                    raise e
+                new_data = (
+                    chunk_id,  # Primary key
+                    cid,  # Original document ID
+                    chunk_index,  # Chunk number
+                    chunk_xxh64,  # Hash of chunk_text
+                    nature,
+                    category,
+                    ministry,
+                    status,
+                    title,
+                    full_title,
+                    subtitles,
+                    number,
+                    start_date,
+                    end_date,
+                    nota,
+                    json.dumps(links),  # Convert links to JSON string
+                    text_content,  # Original text
+                    chunk_text,  # Augmented text for better search
+                    embeddings,  # Embedding of chunk_text
+                )
+                data_to_insert.append(new_data)
+            except PermissionDeniedError as e:
+                logger.error(
+                    f"PermissionDeniedError (API key issue) for file {file_name}: {e}"
+                )
+                raise e
 
-            # Inserting all chunks at once
+            # Inserting the single document chunk
             if data_to_insert:
                 insert_data(data=data_to_insert, table_name=table_name)
                 upsert_legi_node(data_to_insert)
@@ -940,51 +933,44 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
                 text_content.append(content)
             text_content = "\n".join(text_content)
 
-            chunks = make_chunks(
-                text=text_content,
-                chunk_size=1500,
-                chunk_overlap=0,
-                length_function="len",
-            )
             data_to_insert = []
 
-            for k, text in enumerate(chunks):
-                try:
-                    chunk_index = k + 1
-                    chunk_text = f"{title}\n{text}" if title else text
+            try:
+                chunk_index = 1  # Whole document = one chunk
+                chunk_text = f"{title}\n{text_content}" if title else text_content
 
-                    chunk_xxh64 = xxhash.xxh64(
-                        chunk_text.encode("utf-8"), seed=2025
-                    ).hexdigest()
+                chunk_xxh64 = xxhash.xxh64(
+                    chunk_text.encode("utf-8"), seed=2025
+                ).hexdigest()
 
-                    embeddings = generate_embeddings_with_retry(
-                        data=chunk_text, attempts=5, model=model
-                    )[0]
+                embeddings = generate_embeddings_with_retry(
+                    data=chunk_text, attempts=5, model=model
+                )[0]
 
-                    chunk_id = f"{cid}_{chunk_index}"
+                chunk_id = f"{cid}_{chunk_index}"
 
-                    new_data = (
-                        chunk_id,
-                        cid,
-                        chunk_index,
-                        chunk_xxh64,
-                        nature,
-                        solution,
-                        title,
-                        number,
-                        decision_date,
-                        jurisdiction,
-                        formation,
-                        text,
-                        chunk_text,
-                        embeddings,
-                    )
-                    data_to_insert.append(new_data)
-                except PermissionDeniedError as e:
-                    logger.error(
-                        f"PermissionDeniedError (API key issue) for chunk {chunk_index} of file {file_name}: {e}"
-                    )
-                    raise e
+                new_data = (
+                    chunk_id,
+                    cid,
+                    chunk_index,
+                    chunk_xxh64,
+                    nature,
+                    solution,
+                    title,
+                    number,
+                    decision_date,
+                    jurisdiction,
+                    formation,
+                    text_content,
+                    chunk_text,
+                    embeddings,
+                )
+                data_to_insert.append(new_data)
+            except PermissionDeniedError as e:
+                logger.error(
+                    f"PermissionDeniedError (API key issue) for file {file_name}: {e}"
+                )
+                raise e
 
             if data_to_insert:
                 insert_data(data=data_to_insert, table_name=table_name)
