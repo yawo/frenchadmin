@@ -146,19 +146,18 @@ def init_graph_schema():
 
 
 def upsert_legi_node(data_to_insert: list):
-    """Upsert a single ``LegalText`` node from a batch of LEGI chunk tuples.
+    """Upsert a single ``LegalText`` node from a LEGI chunk tuple.
 
-    All chunks of the document are collapsed into list properties on the
-    single ``LegalText`` node — no separate chunk nodes are created.
+    The document is processed as a single chunk; metadata and the chunk text
+    are stored as scalar properties on the ``LegalText`` node.
 
     Properties set on the node:
 
-    * Metadata from the first chunk: ``title``, ``full_title``, ``nature``,
+    * Metadata from the chunk: ``title``, ``full_title``, ``nature``,
       ``category``, ``ministry``, ``status``, ``number``, ``start_date``,
       ``end_date``.
-    * ``chunk_texts``  — ordered list of ``chunk_text`` values (one per chunk).
-    * ``embeddings``   — ordered list of embedding vectors (one per chunk);
-      only populated for chunks that have a non-``None`` embedding.
+    * ``chunk_text``  — the single chunk text for the document.
+    * ``embedding``   — the embedding vector for the chunk (when non-``None``).
 
     Relationships created:
 
@@ -180,7 +179,7 @@ def upsert_legi_node(data_to_insert: list):
        18  embeddings
 
     Args:
-        data_to_insert: List of tuples, one per chunk.  Must not be empty.
+        data_to_insert: List containing a single tuple for the document chunk.
     """
     if not data_to_insert:
         return
@@ -193,11 +192,11 @@ def upsert_legi_node(data_to_insert: list):
         first = data_to_insert[0]
         doc_id = first[1]
 
-        # Collect chunk texts and embeddings in chunk-index order
-        chunk_texts = [row[17] or "" for row in data_to_insert]
-        embeddings = [row[18] for row in data_to_insert if row[18] is not None]
+        # Single chunk text and embedding
+        chunk_text = first[17] or ""
+        embedding = first[18]
 
-        # 1. Upsert LegalText doc node with chunk data as properties
+        # 1. Upsert LegalText doc node with chunk data as scalar properties
         params = {
             "doc_id": doc_id,
             "title": first[8] or "",
@@ -209,7 +208,7 @@ def upsert_legi_node(data_to_insert: list):
             "number": first[11] or "",
             "start_date": first[12] or "",
             "end_date": first[13] or "",
-            "chunk_texts": chunk_texts,
+            "chunk_text": chunk_text,
         }
         query = """
             MERGE (d:LegalText {doc_id: $doc_id})
@@ -222,11 +221,11 @@ def upsert_legi_node(data_to_insert: list):
                 d.number       = $number,
                 d.start_date   = $start_date,
                 d.end_date     = $end_date,
-                d.chunk_texts  = $chunk_texts
+                d.chunk_text   = $chunk_text
             """
-        if embeddings:
-            query += " SET d.embeddings = $embeddings"
-            params["embeddings"] = embeddings
+        if embedding is not None:
+            query += " SET d.embedding = $embedding"
+            params["embedding"] = embedding
         _safe_query(query, params)
 
         # 2. BELONGS_TO_CODE
@@ -284,17 +283,17 @@ def upsert_legi_node(data_to_insert: list):
 
 
 def upsert_jade_node(data_to_insert: list):
-    """Upsert a single ``JudicialDecision`` node from a batch of JADE chunk tuples.
+    """Upsert a single ``JudicialDecision`` node from a JADE chunk tuple.
 
-    All chunks of the decision are collapsed into list properties on the
-    single ``JudicialDecision`` node — no separate chunk nodes are created.
+    The document is processed as a single chunk; metadata and the chunk text
+    are stored as scalar properties on the ``JudicialDecision`` node.
 
     Properties set on the node:
 
-    * Metadata from the first chunk: ``nature``, ``solution``, ``title``,
+    * Metadata from the chunk: ``nature``, ``solution``, ``title``,
       ``number``, ``decision_date``, ``jurisdiction``, ``formation``.
-    * ``chunk_texts``  — ordered list of ``chunk_text`` values.
-    * ``embeddings``   — ordered list of embedding vectors (non-``None`` only).
+    * ``chunk_text``  — the single chunk text for the document.
+    * ``embedding``   — the embedding vector for the chunk (when non-``None``).
 
     Relationships created:
 
@@ -311,7 +310,7 @@ def upsert_jade_node(data_to_insert: list):
        12  chunk_text    13  embeddings
 
     Args:
-        data_to_insert: List of tuples, one per chunk.
+        data_to_insert: List containing a single tuple for the document chunk.
     """
     if not data_to_insert:
         return
@@ -324,11 +323,11 @@ def upsert_jade_node(data_to_insert: list):
         first = data_to_insert[0]
         doc_id = first[1]
 
-        # Collect chunk texts and embeddings in chunk-index order
-        chunk_texts = [row[12] or "" for row in data_to_insert]
-        embeddings = [row[13] for row in data_to_insert if row[13] is not None]
+        # Single chunk text and embedding
+        chunk_text = first[12] or ""
+        embedding = first[13]
 
-        # 1. Upsert JudicialDecision doc node with chunk data as properties
+        # 1. Upsert JudicialDecision doc node with chunk data as scalar properties
         params = {
             "doc_id": doc_id,
             "nature": first[4] or "",
@@ -338,7 +337,7 @@ def upsert_jade_node(data_to_insert: list):
             "decision_date": first[8] or "",
             "jurisdiction": first[9] or "",
             "formation": first[10] or "",
-            "chunk_texts": chunk_texts,
+            "chunk_text": chunk_text,
         }
         query = """
             MERGE (d:JudicialDecision {doc_id: $doc_id})
@@ -349,11 +348,11 @@ def upsert_jade_node(data_to_insert: list):
                 d.decision_date = $decision_date,
                 d.jurisdiction  = $jurisdiction,
                 d.formation     = $formation,
-                d.chunk_texts   = $chunk_texts
+                d.chunk_text    = $chunk_text
             """
-        if embeddings:
-            query += " SET d.embeddings = $embeddings"
-            params["embeddings"] = embeddings
+        if embedding is not None:
+            query += " SET d.embedding = $embedding"
+            params["embedding"] = embedding
         _safe_query(query, params)
 
         # 2. DECIDED_BY
@@ -377,20 +376,18 @@ def upsert_jade_node(data_to_insert: list):
 
 
 def upsert_bofip_node(data_to_insert: list):
-    """Upsert a single ``TaxGuidance`` node from a batch of BOFiP chunk tuples.
+    """Upsert a single ``TaxGuidance`` node from a BOFiP chunk tuple.
 
-    All chunks of the document are collapsed into list properties on the
-    single ``TaxGuidance`` node — no separate chunk nodes are created.
-    (BOFiP documents are processed as a single chunk, so these lists
-    typically contain exactly one element.)
+    Each BOFiP document is processed as a single chunk; metadata and the
+    chunk text are stored as scalar properties on the ``TaxGuidance`` node.
 
     Properties set on the node:
 
-    * Metadata from the first chunk: ``title``, ``contenu_type``,
+    * Metadata from the chunk: ``title``, ``contenu_type``,
       ``document_number``, ``bofip_url``, ``date``, ``subjects``,
       ``category`` (from *category_path* — the existing BOFIP taxonomy field).
-    * ``chunk_texts``  — ordered list of ``chunk_text`` values.
-    * ``embeddings``   — ordered list of embedding vectors (non-``None`` only).
+    * ``chunk_text``  — the single chunk text for the document.
+    * ``embedding``   — the embedding vector for the chunk (when non-``None``).
 
     Relationships created:
 
@@ -413,8 +410,7 @@ def upsert_bofip_node(data_to_insert: list):
     *category_path* (existing BOFIP field) as required by the graph ontology.
 
     Args:
-        data_to_insert: List of tuples, one per chunk (usually a single tuple
-            for BOFiP since each document is processed as one chunk).
+        data_to_insert: List containing a single tuple for the document chunk.
     """
     if not data_to_insert:
         return
@@ -429,11 +425,11 @@ def upsert_bofip_node(data_to_insert: list):
         subjects = first[10]
         subjects_str = ", ".join(subjects) if subjects else ""
 
-        # Collect chunk texts and embeddings in chunk-index order
-        chunk_texts = [row[14] or "" for row in data_to_insert]
-        embeddings = [row[15] for row in data_to_insert if row[15] is not None]
+        # Single chunk text and embedding
+        chunk_text = first[14] or ""
+        embedding = first[15]
 
-        # 1. Upsert TaxGuidance doc node with chunk data as properties
+        # 1. Upsert TaxGuidance doc node with chunk data as scalar properties
         params = {
             "doc_id": doc_id,
             "title": first[4] or "",
@@ -444,7 +440,7 @@ def upsert_bofip_node(data_to_insert: list):
             "subjects": subjects_str,
             # category_path is the existing BOFIP taxonomy field
             "category": first[11] or "",
-            "chunk_texts": chunk_texts,
+            "chunk_text": chunk_text,
         }
         query = """
             MERGE (d:TaxGuidance {doc_id: $doc_id})
@@ -455,11 +451,11 @@ def upsert_bofip_node(data_to_insert: list):
                 d.date             = $date,
                 d.subjects         = $subjects,
                 d.category         = $category,
-                d.chunk_texts      = $chunk_texts
+                d.chunk_text       = $chunk_text
             """
-        if embeddings:
-            query += " SET d.embeddings = $embeddings"
-            params["embeddings"] = embeddings
+        if embedding is not None:
+            query += " SET d.embedding = $embedding"
+            params["embedding"] = embedding
         _safe_query(query, params)
 
         # 2. BELONGS_TO_CODE (using category_path as the taxonomy identifier)
