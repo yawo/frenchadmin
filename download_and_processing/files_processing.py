@@ -12,7 +12,14 @@ from bs4 import BeautifulSoup
 from openai import PermissionDeniedError
 
 from config import BASE_PATH, EMBEDDING_MODEL, SOURCE_MAP, config_file_path, get_logger
-from database import insert_data, refresh_table, remove_data, upsert_bofip_node, upsert_jade_node, upsert_legi_node
+from database import (
+    insert_data,
+    refresh_table,
+    remove_data,
+    upsert_bofip_node,
+    upsert_jade_node,
+    upsert_legi_node,
+)
 from utils import (
     CheckpointManager,
     CorpusHandler,
@@ -901,7 +908,11 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
         table_name = "jade"
         try:
             cid = root.find(".//ID").text
-            nature = root.find(".//NATURE").text if root.find(".//NATURE") is not None else None
+            nature = (
+                root.find(".//NATURE").text
+                if root.find(".//NATURE") is not None
+                else None
+            )
             title_elem = root.find(".//TITRE")
             title = title_elem.text if title_elem is not None else None
             number_elem = root.find(".//NUMERO")
@@ -909,15 +920,19 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
             solution_elem = root.find(".//SOLUTION")
             solution = solution_elem.text if solution_elem is not None else None
             jurisdiction_elem = root.find(".//JURIDICTION")
-            jurisdiction = jurisdiction_elem.text if jurisdiction_elem is not None else None
+            jurisdiction = (
+                jurisdiction_elem.text if jurisdiction_elem is not None else None
+            )
             formation_elem = root.find(".//FORMATION")
             formation = formation_elem.text if formation_elem is not None else None
 
             date_elem = root.find(".//DATE_DEC")
             try:
-                decision_date = datetime.strptime(
-                    date_elem.text, "%Y-%m-%d"
-                ).strftime("%Y-%m-%d") if date_elem is not None and date_elem.text else None
+                decision_date = (
+                    datetime.strptime(date_elem.text, "%Y-%m-%d").strftime("%Y-%m-%d")
+                    if date_elem is not None and date_elem.text
+                    else None
+                )
             except ValueError:
                 decision_date = date_elem.text if date_elem is not None else None
 
@@ -1813,9 +1828,7 @@ def _parse_bofip_path(file_path: str) -> dict:
     dir_parts = parts[:-1]
 
     # Locate "Contenu" in the path
-    contenu_idx = next(
-        (i for i, p in enumerate(dir_parts) if p == "Contenu"), None
-    )
+    contenu_idx = next((i for i, p in enumerate(dir_parts) if p == "Contenu"), None)
 
     if contenu_idx is None:
         return {
@@ -2006,22 +2019,22 @@ def _process_bofip_document(
         raise
 
     new_data = (
-        chunk_id,          # PRIMARY KEY
-        doc_id,            # bofip:contenu_id (canonical identifier)
-        chunk_index,       # 1 — one chunk per document
-        chunk_xxh64,       # xxhash of chunk_text
-        title,             # dc:title
-        contenu_id,        # bofip:contenu_id
-        contenu_type,      # bofip:contenu_type
-        document_number,   # first dc:identifier (e.g. "6551-PGP")
-        bofip_url,         # second dc:identifier (source URL)
+        chunk_id,  # PRIMARY KEY
+        doc_id,  # bofip:contenu_id (canonical identifier)
+        chunk_index,  # 1 — one chunk per document
+        chunk_xxh64,  # xxhash of chunk_text
+        title,  # dc:title
+        contenu_id,  # bofip:contenu_id
+        contenu_type,  # bofip:contenu_type
+        document_number,  # first dc:identifier (e.g. "6551-PGP")
+        bofip_url,  # second dc:identifier (source URL)
         publication_date,  # dc:date
-        subjects,          # deduplicated dc:subject values
-        category_path,     # full taxonomy path from the archive
+        subjects,  # deduplicated dc:subject values
+        category_path,  # full taxonomy path from the archive
         json.dumps(links, ensure_ascii=False),  # dc:relation links
-        text,              # plain text extracted from data.html
-        chunk_text,        # enriched text used for embedding
-        embeddings,        # embedding vector
+        text,  # plain text extracted from data.html
+        chunk_text,  # enriched text used for embedding
+        embeddings,  # embedding vector
     )
 
     return [new_data]
@@ -2139,9 +2152,7 @@ def _process_bofip_tgz(
                     )
                     continue
                 except PermissionDeniedError as e:
-                    logger.error(
-                        f"PermissionDeniedError processing {dir_path}: {e}"
-                    )
+                    logger.error(f"PermissionDeniedError processing {dir_path}: {e}")
                     raise
                 except Exception as e:
                     logger.error(f"Error processing document at {dir_path}: {e}")

@@ -207,7 +207,9 @@ def _get_length_function(length_function: str):
         return len
 
     # "bge_m3_tokenizer" is kept for backwards compatibility
-    model_name = "BAAI/bge-m3" if length_function == "bge_m3_tokenizer" else length_function
+    model_name = (
+        "BAAI/bge-m3" if length_function == "bge_m3_tokenizer" else length_function
+    )
     if model_name not in _tokenizer_cache:
         _tokenizer_cache[model_name] = AutoTokenizer.from_pretrained(model_name)
     tokenizer = _tokenizer_cache[model_name]

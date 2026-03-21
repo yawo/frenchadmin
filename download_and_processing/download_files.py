@@ -8,7 +8,13 @@ from urllib.request import urlopen
 import requests
 from bs4 import BeautifulSoup
 
-from config import BASE_PATH, EMBEDDING_MODEL, config_file_path, data_history_path, get_logger
+from config import (
+    BASE_PATH,
+    EMBEDDING_MODEL,
+    config_file_path,
+    data_history_path,
+    get_logger,
+)
 from utils import (
     correct_wrong_column_contents,
     download_file,
@@ -499,20 +505,19 @@ def download_and_optionally_process_files(
                     logger.error(
                         f"File : {data_source} is not a supported file, skipping download."
                     )
-            
+
             elif attributes.get("type") == "bofip":
-                
                 url = attributes.get("download_url", "")
                 download_folder = os.path.join(
                     BASE_PATH, attributes.get("download_folder", "")
-                )                  
+                )
 
                 os.makedirs(download_folder, exist_ok=True)
                 logger.info(f"Downloading '{data_source}' from {url}...")
                 response = requests.get(url)
                 csv = response.content.decode("utf-8")
                 # Open CSV and check files against last_downloaded_file_list
-                '''
+                """
                 Nom du fichier;Date de début;Date de fin;Téléchargement;Type;Contenu;Empreinte
                 bofip_flux_live_20260129_20260204.tgz;2026-01-29;2026-02-04;https://bofip.impots.gouv.fr/opendata/flux/6;flux;6 nouvelles publications doctrinales.;https://bofip.impots.gouv.fr/opendata/empreinte/flux/6
                 bofip_flux_live_20260122_20260128.tgz;2026-01-22;2026-01-28;https://bofip.impots.gouv.fr/opendata/flux/5;flux;3 nouvelles publications doctrinales. Mise à jour du plan de classement.;https://bofip.impots.gouv.fr/opendata/empreinte/flux/5
@@ -521,26 +526,29 @@ def download_and_optionally_process_files(
                 bofip_flux_live_20260115_20260121.tgz;2026-01-15;2026-01-21;https://bofip.impots.gouv.fr/opendata/flux/4;flux;11 nouvelles publications doctrinales. Mise à jour du plan de classement.;https://bofip.impots.gouv.fr/opendata/empreinte/flux/4
                 bofip_stock_live_20260128.tgz;;2026-01-28;https://bofip.impots.gouv.fr/opendata/stock/1;stock;Contenu doctrinal en vigueur au 28/01/2026.;https://bofip.impots.gouv.fr/opendata/empreinte/stock/1
                 bofip_flux_live_20260108_20260114.tgz;2026-01-08;2026-01-14;https://bofip.impots.gouv.fr/opendata/flux/3;flux;4 nouvelles publications doctrinales. Mise à jour du plan de classement.;https://bofip.impots.gouv.fr/opendata/empreinte/flux/3
-                '''
+                """
                 csvLines = csv.split("\n")
 
                 # Sort zip with url, sorted on filename
                 subtypes = ["flux", "stock"]
-                for subtype in subtypes:                  
+                for subtype in subtypes:
                     try:
                         last_downloaded_file = log.get(data_source).get(
-                            f"last_downloaded_{subtype}_file", "")
+                            f"last_downloaded_{subtype}_file", ""
+                        )
                     except Exception:
-                        last_downloaded_file = "" 
+                        last_downloaded_file = ""
 
                     tar_gz_files = sorted(
                         [
                             {"filename": line.split(";")[0], "url": line.split(";")[3]}
                             for line in csvLines
-                            if line.split(";")[0].endswith(".tgz") and line.split(";")[4] == subtype
-                        ], key=lambda x: x["filename"]
+                            if line.split(";")[0].endswith(".tgz")
+                            and line.split(";")[4] == subtype
+                        ],
+                        key=lambda x: x["filename"],
                     )
-                    
+
                     logger.debug(
                         f"{len(tar_gz_files)} {subtype} tar.gz files found in {url}: {tar_gz_files}"
                     )
@@ -562,7 +570,7 @@ def download_and_optionally_process_files(
                             last_file_index + 1 :
                         ]:  # As we already downloaded the last file, we start from the next file
                             filename = file.get("filename")
-                            url=file.get("url")
+                            url = file.get("url")
                             download_path = os.path.join(download_folder, filename)
                             download_file(url=url, destination_path=download_path)
 

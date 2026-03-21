@@ -104,9 +104,7 @@ def _safe_query(query: str, params: dict):
     try:
         graph.query(query, params)
     except Exception as exc:
-        logger.debug(
-            "FalkorDB query error (non-fatal): %s – query: %.120s", exc, query
-        )
+        logger.debug("FalkorDB query error (non-fatal): %s – query: %.120s", exc, query)
 
 
 # ── Schema initialisation ────────────────────────────────────────────────────
@@ -495,4 +493,3 @@ def upsert_bofip_node(data_to_insert: list):
 
     except Exception as exc:
         logger.warning("upsert_bofip_node failed (non-fatal): %s", exc)
-
