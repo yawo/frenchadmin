@@ -24,6 +24,10 @@ x-airflow-common:
     QDRANT_HOST: qdrant
     QDRANT_PORT: '6333'
     QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+    FALKORDB_HOST: falkordb
+    FALKORDB_PORT: '6379'
+    FALKORDB_PASSWORD: ${FALKORDB_PASSWORD:-}
+    FALKORDB_GRAPH_NAME: ${FALKORDB_GRAPH_NAME:-frenchadmin}
   volumes:
     - ./airflow_config/dags:/opt/airflow/dags
     - ./airflow_config/logs:/opt/airflow/logs
@@ -81,6 +85,20 @@ services:
       - "127.0.0.1:${QDRANT_PORT:-6333}:6333"
     volumes:
       - qdrant_data:/qdrant/storage
+
+  falkordb:
+    image: falkordb/falkordb:latest
+    container_name: falkordb_container
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      retries: 5
+      start_period: 10s
+    restart: always
+    ports:
+      - "127.0.0.1:${FALKORDB_PORT:-6379}:6379"
+    volumes:
+      - falkordb_data:/data
 
   airflow-apiserver:
     <<: *airflow-common
@@ -245,3 +263,4 @@ services:
 volumes:
   pgvector_data:
   qdrant_data:
+  falkordb_data:

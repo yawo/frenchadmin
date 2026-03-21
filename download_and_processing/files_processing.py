@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 from openai import PermissionDeniedError
 
 from config import BASE_PATH, EMBEDDING_MODEL, SOURCE_MAP, config_file_path, get_logger
-from database import insert_data, refresh_table, remove_data
+from database import insert_data, refresh_table, remove_data, upsert_bofip_node, upsert_jade_node, upsert_legi_node
 from utils import (
     CheckpointManager,
     CorpusHandler,
@@ -728,6 +728,7 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
             # Inserting all chunks at once
             if data_to_insert:
                 insert_data(data=data_to_insert, table_name=table_name)
+                upsert_legi_node(data_to_insert)
 
         except Exception as e:
             logger.error(f"Error processing file {file_name}: {e}")
@@ -987,6 +988,7 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
 
             if data_to_insert:
                 insert_data(data=data_to_insert, table_name=table_name)
+                upsert_jade_node(data_to_insert)
 
         except Exception as e:
             logger.error(f"Error processing file {file_name}: {e}")
@@ -2131,6 +2133,7 @@ def _process_bofip_tgz(
 
                     if data_to_insert:
                         insert_data(data=data_to_insert, table_name=table_name)
+                        upsert_bofip_node(data_to_insert)
 
                     checkpoint.save(
                         idx,
