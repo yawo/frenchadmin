@@ -45,7 +45,7 @@ def _get_embedding_model(model: str = EMBEDDING_MODEL) -> SentenceTransformer:
     global _embedding_model_cache
     if model not in _embedding_model_cache:
         logger.info(f"Loading embedding model '{model}' from HuggingFace...")
-        _embedding_model_cache[model] = SentenceTransformer(model)
+        _embedding_model_cache[model] = SentenceTransformer(model, trust_remote_code=True)
     return _embedding_model_cache[model]
 
 

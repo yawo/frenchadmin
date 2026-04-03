@@ -20,7 +20,7 @@ dependencies = [
     "polars==1.29.0",
     "langchain==0.3.25",
     "lxml==5.4.0",
-    "huggingface-hub==0.34.4",
+    "huggingface-hub==1.9.0",
     "docopt==0.6.2",
     "unidecode==1.4.0",
     "pandas==2.2.3",
@@ -28,8 +28,8 @@ dependencies = [
     "apache-airflow==3.0.6",
     "apache-airflow-providers-apprise==2.1.2",
     "xxhash==3.5.0",
-    "transformers==4.57.3",
-    "sentence-transformers==3.4.1",
+    "transformers==5.5.0",
+    "sentence-transformers==5.3.0",
     "falkordb==1.6.0"
 ]
 
