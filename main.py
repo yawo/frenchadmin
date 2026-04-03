@@ -155,7 +155,7 @@ def main():
             if args["--all"]:
                 folder = args["--folder"] or os.path.join(BASE_PATH, "data/unprocessed")
                 logger.info(f"Processing all unprocessed data from folder: {folder}")
-                process_all_data(unprocessed_data_folder=folder, model=model)
+                process_all_data(model=model)
             else:
                 source = args["--source"]
 
