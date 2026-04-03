@@ -6,12 +6,7 @@ from contextlib import contextmanager
 
 import duckdb
 import psycopg2
-from fastembed import SparseTextEmbedding
 from psycopg2 import pool
-from psycopg2.extras import RealDictCursor
-from qdrant_client import QdrantClient, models
-from tqdm import tqdm
-
 from config import (
     EMBEDDING_MODEL,
     POSTGRES_DB,
@@ -1588,123 +1583,6 @@ def remove_data(table_name: str, column: str, value: str):
             )
     except Exception as e:
         logger.error(f"Error removing data from PostgreSQL: {e}")
-
-
-### LEGACY FUNCTIONS ###
-
-
-def postgres_to_qdrant(
-    table_name: str,
-    qdrant_client: QdrantClient,
-    collection_name: str,
-    model: str = EMBEDDING_MODEL,
-    delete_existing: bool = False,
-):
-    """
-    Transfer data from a PostgreSQL table to a Qdrant vector database collection.
-
-    This function reads data from a specified PostgreSQL table, generates embeddings
-    for hybrid search using the BM25 model, and stores the data in a Qdrant collection
-    with vector and sparse vector configurations.
-
-    Args:
-        table_name (str): Name of the PostgreSQL table to read data from.
-        qdrant_client (QdrantClient): Initialized Qdrant client for database operations.
-        collection_name (str): Name of the Qdrant collection to write data to.
-        delete_existing (bool, optional): Whether to delete existing collection data.
-            Defaults to False (though the collection is recreated regardless).
-
-    Raises:
-        Exception: Any error encountered during database operations is logged.
-
-    Note:
-        The function uses EMBEDDING_MODEL for dense vector embeddings and Qdrant/bm25 by default for
-        sparse vector embeddings to support hybrid search.
-    """
-
-    probe_vector = generate_embeddings_with_retry(
-        data="Hey, I'am a probe", model=model
-    )[0]
-    embedding_size = len(probe_vector)
-    model_name = format_model_name(model)
-    bm25_embedding_model = SparseTextEmbedding("Qdrant/bm25")  # For hybrid search
-
-    if delete_existing:
-        # Drop the collection if it exists
-        try:
-            qdrant_client.delete_collection(collection_name=collection_name)
-            logger.info(f"Collection '{collection_name}' deleted successfully")
-        except Exception as e:
-            logger.error(f"Error deleting collection '{collection_name}': {e}")
-            raise e
-
-    # Create the Qdrant collection if it doesn't exist
-    qdrant_client.recreate_collection(
-        collection_name=collection_name,
-        vectors_config={
-            model: models.VectorParams(
-                size=embedding_size, distance=models.Distance.COSINE
-            )
-        },
-        sparse_vectors_config={
-            "bm25": models.SparseVectorParams(
-                modifier=models.Modifier.IDF,
-            )  # For hybrid search
-        },
-    )
-
-    conn = None
-    try:
-        conn = psycopg2.connect(
-            host=POSTGRES_HOST,
-            port=POSTGRES_PORT,
-            dbname=POSTGRES_DB,
-            user=POSTGRES_USER,
-            password=POSTGRES_PASSWORD,
-        )
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-
-        # Read data from PostgreSQL
-        cursor.execute(f"SELECT * FROM {table_name.upper()}")
-        rows = cursor.fetchall()
-
-        # Prepare data for Qdrant
-        for row in tqdm(rows, desc="Inserting data into Qdrant", unit="rows"):
-            bm25_embeddings = list(
-                bm25_embedding_model.passage_embed(row["chunk_text"])
-            )
-            chunk_id = row["chunk_id"]
-            embeddings = json.loads(row[f"embeddings_{model_name}"])
-            metadata = dict(row)
-            del (
-                metadata[f"embeddings_{model_name}"],
-            )  # Remove unnecessary fields from metadata
-
-            # Generate UUID from chunk_id for consistency
-            point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, chunk_id))
-
-            qdrant_client.upsert(
-                collection_name=collection_name,
-                points=[
-                    models.PointStruct(
-                        id=point_id,
-                        vector={
-                            model: embeddings,
-                            "bm25": bm25_embeddings[0].as_object(),
-                        },
-                        payload=metadata,
-                    )
-                ],
-            )
-
-        conn.commit()
-    except Exception as e:
-        logger.error(f"Error inserting data into Qdrant: {e}")
-        raise e
-    finally:
-        if conn:
-            conn.close()
-            logger.debug("PostgreSQL connection closed")
 
 
 def get_distinct_values(table_name: str, column: str) -> list:

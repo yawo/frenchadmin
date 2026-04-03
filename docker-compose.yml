@@ -21,9 +21,6 @@ x-airflow-common:
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
     RUNNING_IN_DOCKER: 'true'
-    QDRANT_HOST: qdrant
-    QDRANT_PORT: '6333'
-    QDRANT_API_KEY: ${QDRANT_API_KEY:-}
     FALKORDB_HOST: falkordb
     FALKORDB_PORT: '6379'
     FALKORDB_PASSWORD: ${FALKORDB_PASSWORD:-}
@@ -47,8 +44,6 @@ x-airflow-common:
     &airflow-common-depends-on
     postgres:
       condition: service_healthy
-    qdrant:
-      condition: service_healthy
 
 services:
   postgres:
@@ -69,22 +64,6 @@ services:
     volumes:
       - pgvector_data:/var/lib/postgresql/data
       - ./database/sql_scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-
-  qdrant:
-    image: qdrant/qdrant:v1.14.2
-    container_name: qdrant_container
-    healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:6333/healthz"]
-      interval: 10s
-      retries: 5
-      start_period: 10s
-    restart: always
-    environment:
-      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
-    ports:
-      - "127.0.0.1:${QDRANT_PORT:-6333}:6333"
-    volumes:
-      - qdrant_data:/qdrant/storage
 
   falkordb:
     image: falkordb/falkordb:latest
@@ -262,5 +241,4 @@ services:
 
 volumes:
   pgvector_data:
-  qdrant_data:
   falkordb_data:

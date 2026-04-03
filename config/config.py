@@ -11,8 +11,6 @@ if os.getenv("RUNNING_IN_DOCKER", "false").lower() == "true":
     base_path = "/tmp/mediatech"
     postgres_host = "postgres"
     postgres_port = "5432"
-    qdrant_host = "qdrant"
-    qdrant_port = "6333"
     falkordb_host = "falkordb"
     falkordb_port = "6379"
 else:
@@ -20,8 +18,6 @@ else:
     base_path = "."
     postgres_host = os.getenv("POSTGRES_HOST", "localhost")
     postgres_port = os.getenv("POSTGRES_PORT", "5433")
-    qdrant_host = os.getenv("QDRANT_HOST", "localhost")
-    qdrant_port = os.getenv("QDRANT_PORT", "6333")
     falkordb_host = os.getenv("FALKORDB_HOST", "localhost")
     falkordb_port = os.getenv("FALKORDB_PORT", "6379")
 
@@ -32,12 +28,6 @@ POSTGRES_USER = os.getenv("POSTGRES_USER", "user")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "password")
 POSTGRES_HOST = postgres_host
 POSTGRES_PORT = postgres_port
-
-# Qdrant configuration
-QDRANT_HOST = qdrant_host
-QDRANT_PORT = int(qdrant_port)
-QDRANT_URL = f"http://{qdrant_host}:{qdrant_port}"
-QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", None)
 
 # FalkorDB configuration
 FALKORDB_HOST = falkordb_host
