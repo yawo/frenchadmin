@@ -110,7 +110,7 @@ def download_file(url: str, destination_path: str):
                     f"Downloaded file size: {file_size} bytes (content-length not provided by server)."
                 )
 
-        logger.info(f"Successfully downloaded {os.path.basename(destination_path)}")
+        logger.info(f"[Helper]Successfully downloaded {os.path.basename(destination_path)}")
     except Exception as e:
         logger.error(f"Failed to download {url}: {e}")
         raise e
