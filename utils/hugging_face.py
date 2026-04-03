@@ -6,8 +6,8 @@ from huggingface_hub import (
     CommitOperationCopy,
     CommitOperationDelete,
     HfApi,
-    HfFolder,
     dataset_info,
+    get_token,
 )
 from huggingface_hub.utils import HfHubHTTPError
 
@@ -61,10 +61,10 @@ class HuggingFace:
 
         Args:
             hugging_face_repo (str): The Hugging Face repository name. (e.g. : "AgentPublic")
-            token (str, optional): Hugging Face API token. If not provided, it will be retrieved from HfFolder.
+            token (str, optional): Hugging Face API token. If not provided, it will be retrieved via get_token().
         """
         self.hugging_face_repo = hugging_face_repo
-        self.token = token if token else HfFolder.get_token()
+        self.token = token if token else get_token()
         self.api = HfApi()
 
     def _is_dataset_up_to_date(self, dataset_name: str, local_folder_path: str) -> bool:
