@@ -18,8 +18,6 @@ dependencies = [
     "langchain-text-splitters==0.3.8",
     "wget==3.2",
     "polars==1.29.0",
-    "fastembed==0.6.1",
-    "qdrant-client==1.14.2",
     "langchain==0.3.25",
     "lxml==5.4.0",
     "huggingface-hub==0.34.4",

@@ -10,7 +10,6 @@ MEDIATECH is a Python data pipeline project that downloads, processes, embeds, a
 - **CLI**: [`docopt`](http://docopt.org/) — entry point is `main.py`, installed as the `mediatech` command
 - **Orchestration**: Apache Airflow (DAGs in `airflow_config/dags/`)
 - **Database**: PostgreSQL with the `pgvector` extension (via `psycopg2-binary`)
-- **Vector store**: Qdrant (`qdrant-client`)
 - **Embeddings**: OpenAI-compatible API client (`openai`) pointing to the Albert API (`albert.api.etalab.gouv.fr`); tokenizers loaded via `transformers`
 - **Data processing**: Polars, Pandas, DuckDB, lxml, BeautifulSoup4
 - **Export/upload**: Parquet files via Polars, published to Hugging Face Hub

@@ -60,7 +60,6 @@ steps:
         POSTGRES_USER=mediatech-postgres-user:latest,
         POSTGRES_PASSWORD=mediatech-postgres-password:latest,
         POSTGRES_DB=mediatech-postgres-db:latest,
-        QDRANT_API_KEY=mediatech-qdrant-api-key:latest,
         HF_TOKEN=mediatech-hf-token:latest,
         API_KEY=mediatech-api-key:latest,
         API_URL=mediatech-api-url:latest
@@ -97,8 +96,7 @@ steps:
       - >-
         POSTGRES_USER=mediatech-postgres-user:latest,
         POSTGRES_PASSWORD=mediatech-postgres-password:latest,
-        POSTGRES_DB=mediatech-postgres-db:latest,
-        QDRANT_API_KEY=mediatech-qdrant-api-key:latest
+        POSTGRES_DB=mediatech-postgres-db:latest
       - '--min-instances'
       - '1'
       - '--memory'
