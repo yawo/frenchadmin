@@ -33,7 +33,45 @@ logger = get_logger(__name__)
 
 # Setting a higher recursion limit for processing large files
 sys.setrecursionlimit(10000)
+#TODO 1: we need a second pass to get other links such as laws 
+# that modify the current code. 
+# We can use the "LIENS" tag in the XML files to get all the relationships 
+# between documents and then update incrementally the database with these links. 
+# This way we will be able to have a more complete graph of legal documents. 
+# We can also use this information to create embeddings that take into account 
+# the relationships between documents, which can improve the search results.
+# TODO 2: After that we will also parse the content of the documents 
+# to infer references to other documents that are not explicitly mentioned in the "LIENS" tag, 
+# but that are present in the text.
+FISCAL_CODES = {
+            "LEGITEXT000006069577": "CGI",
+            "LEGITEXT000006069583": "LPF",
+            "LEGITEXT000044594668": "CIBS"
+        }
+       
+def is_fiscal_ruling(xml_root):
+    # 1. Target the SCT tag inside the SOMMAIRE
+    sct_tag = xml_root.find(".//SCT")
+    
+    if sct_tag is not None and sct_tag.text:
+        # The first two digits determine the legal domain
+        classification_code = sct_tag.text.split()[0] # Get '39-02-005'
+        
+        if classification_code.startswith("19"):
+            return True, classification_code
+            
+    return False
 
+def is_fiscal_code(category):
+    if category in FISCAL_CODES:
+        return True
+    
+    # # Backup: Search for the 'Champ Juridique'
+    # champ = xml_root.find(".//CHAMP_JURIDIQUE")
+    # if champ is not None and "Droit fiscal" in champ.text:
+    #     return True
+        
+    return False
 
 def _process_data_gouv_content(
     df: pd.DataFrame,
@@ -595,9 +633,20 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
         Exception: For any other errors encountered during file processing,
                    which are logged and re-raised.
     """
+   
     if file_name.startswith("LEGIARTI") and file_name.endswith(".xml"):
         table_name = "legi"
+        TARGET_CODES = {
+            "LEGITEXT000006069577": "CGI",
+            "LEGITEXT000006069583": "LPF",
+            "LEGITEXT000044594668": "CIBS"
+        }
         try:
+            category = root.find(".//CONTEXTE//TEXTE").get("cid", None)
+            if not is_fiscal_code(root):            
+                # logger.info(f"Skipping file {file_name} with category {category} not in target codes.")
+                return  # Skip processing for this file
+            ministry = root.find(".//CONTEXTE//TEXTE").get("ministere", None)
             status = root.find(".//ETAT").text
             cid = root.find(".//ID").text  # doc_id
             nature = root.find(".//NATURE").text
@@ -606,8 +655,7 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
                 .get("c_titre_court")
                 .strip(".")
             )
-            category = root.find(".//CONTEXTE//TEXTE").get("nature", None)
-            ministry = root.find(".//CONTEXTE//TEXTE").get("ministere", None)
+          
             subtitles = []
             for elem in root.find(".//CONTEXTE//TEXTE").iter("TITRE_TM"):
                 subtitles.append(elem.text)
@@ -668,57 +716,58 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
             text_content = "\n".join(text_content)
 
             data_to_insert = []
+            chunks = make_chunks(text=text_content)
+            for k, text in enumerate(chunks):
+                try:
+                    chunk_index =  k + 1 # Start chunk numbering from 1
+                    chunk_text = f"{full_title}"
+                    if number:
+                        chunk_text += f" - Article {number}"
+                    # Adding subtitles only if the text is long enough
+                    if subtitles and len(text) > 200:
+                        context = format_subtitles(subtitles=subtitles)
+                        if context and len(context) < len(text):
+                            chunk_text += f"\n{context}"  # Augment the chunk text with subtitles concepts
+                    chunk_text += f"\n{text}"
 
-            try:
-                chunk_index = 1  # Whole document = one chunk
-                chunk_text = f"{full_title}"
-                if number:
-                    chunk_text += f" - Article {number}"
-                # Adding subtitles only if the text is long enough
-                if subtitles and len(text_content) > 200:
-                    context = format_subtitles(subtitles=subtitles)
-                    if context and len(context) < len(text_content):
-                        chunk_text += f"\n{context}"  # Augment the chunk text with subtitles concepts
-                chunk_text += f"\n{text_content}"
+                    chunk_xxh64 = xxhash.xxh64(
+                        chunk_text.encode("utf-8"), seed=2025
+                    ).hexdigest()
 
-                chunk_xxh64 = xxhash.xxh64(
-                    chunk_text.encode("utf-8"), seed=2025
-                ).hexdigest()
+                    embeddings = generate_embeddings_with_retry(
+                        data=chunk_text, attempts=5, model=model
+                    )[0]
+                    chunk_id = f"{cid}_{chunk_index}"  # Unique ID for the chunk
 
-                embeddings = generate_embeddings_with_retry(
-                    data=chunk_text, attempts=5, model=model
-                )[0]
-                chunk_id = f"{cid}_{chunk_index}"  # Unique ID for the chunk
+                    new_data = (
+                        chunk_id,  # Primary key
+                        cid,  # Original document ID
+                        chunk_index,  # Chunk number
+                        chunk_xxh64,  # Hash of chunk_text
+                        nature,
+                        category,
+                        ministry,
+                        status,
+                        title,
+                        full_title,
+                        subtitles,
+                        number,
+                        start_date,
+                        end_date,
+                        nota,
+                        json.dumps(links),  # Convert links to JSON string
+                        text,  # Original text
+                        chunk_text,  # Augmented text for better search
+                        embeddings,  # Embedding of chunk_text
+                    )
+                    data_to_insert.append(new_data)
+                except PermissionDeniedError as e:
+                    logger.error(
+                        f"PermissionDeniedError (API key issue) for file {file_name}: {e}"
+                    )
+                    raise e
 
-                new_data = (
-                    chunk_id,  # Primary key
-                    cid,  # Original document ID
-                    chunk_index,  # Chunk number
-                    chunk_xxh64,  # Hash of chunk_text
-                    nature,
-                    category,
-                    ministry,
-                    status,
-                    title,
-                    full_title,
-                    subtitles,
-                    number,
-                    start_date,
-                    end_date,
-                    nota,
-                    json.dumps(links),  # Convert links to JSON string
-                    text_content,  # Original text
-                    chunk_text,  # Augmented text for better search
-                    embeddings,  # Embedding of chunk_text
-                )
-                data_to_insert.append(new_data)
-            except PermissionDeniedError as e:
-                logger.error(
-                    f"PermissionDeniedError (API key issue) for file {file_name}: {e}"
-                )
-                raise e
-
-            # Inserting the single document chunk
+            # Inserting all chunks at once
             if data_to_insert:
                 insert_data(data=data_to_insert, table_name=table_name)
                 upsert_legi_node(data_to_insert)
@@ -728,6 +777,8 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
             raise e
 
     elif file_name.startswith("CNILTEXT") and file_name.endswith(".xml"):
+        # logger.info(f"Not processing CNIL file: {file_name}")
+        return
         table_name = "cnil"
         try:
             status = root.find(".//ETAT_JURIDIQUE").text
@@ -816,6 +867,8 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
             raise e
 
     elif file_name.startswith("CONSTEXT") and file_name.endswith(".xml"):
+        # logger.info(f"Not processing Constit file: {file_name}")
+        return
         table_name = "constit"
         try:
             cid = root.find(".//ID").text
@@ -898,6 +951,9 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
             raise e
 
     elif file_name.startswith("JADETEXT") and file_name.endswith(".xml"):
+        if not is_fiscal_ruling(root):            
+            # logger.info(f"Skipping file {file_name} with category not identified as fiscal ruling.")
+            return  # Skip processing for this file
         table_name = "jade"
         try:
             cid = root.find(".//ID").text
@@ -921,56 +977,63 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
             except ValueError:
                 decision_date = date_elem.text if date_elem is not None else None
 
-            contenu = root.find(".//BLOC_TEXTUEL//CONTENU")
             text_content = []
 
-            if contenu is not None:
-                content = ET.tostring(contenu, encoding="unicode", method="xml")
-                content = "".join(ET.fromstring(content).itertext())
-                lines = content.splitlines()
-                cleaned_lines = [line for line in lines if line]
-                content = "\n".join(cleaned_lines)
-                text_content.append(content)
+            # Use ana element if it exists and keep the id for more details, otherwise fallback to BLOC_TEXTUEL/CONTENU
+            ana_elem = root.find(".//ANA")
+            if ana_elem is not None:
+                text_content.append(ana_elem.text)
+            else:
+                logger.warning(f"ANA element not found in file {file_name}. Text content may be incomplete.")
+                contenu = root.find(".//BLOC_TEXTUEL//CONTENU")
+                if contenu is not None:
+                    content = ET.tostring(contenu, encoding="unicode", method="xml")
+                    content = "".join(ET.fromstring(content).itertext())
+                    lines = content.splitlines()
+                    cleaned_lines = [line for line in lines if line]
+                    content = "\n".join(cleaned_lines)
+                    text_content.append(content)
+            
             text_content = "\n".join(text_content)
-
             data_to_insert = []
+            chunks = make_chunks(text=text_content)
+            for k, text in enumerate(chunks):
+                try:
+                    chunk_index = 1  # Whole document = one chunk
+                    chunk_text = f"{title}\n{text}" if title else text
 
-            try:
-                chunk_index = 1  # Whole document = one chunk
-                chunk_text = f"{title}\n{text_content}" if title else text_content
+                    chunk_xxh64 = xxhash.xxh64(
+                        chunk_text.encode("utf-8"), seed=2025
+                    ).hexdigest()
 
-                chunk_xxh64 = xxhash.xxh64(
-                    chunk_text.encode("utf-8"), seed=2025
-                ).hexdigest()
+                    embeddings = generate_embeddings_with_retry(
+                        data=chunk_text, attempts=5, model=model
+                    )[0]
 
-                embeddings = generate_embeddings_with_retry(
-                    data=chunk_text, attempts=5, model=model
-                )[0]
+                    chunk_id = f"{cid}_{chunk_index}"
 
-                chunk_id = f"{cid}_{chunk_index}"
-
-                new_data = (
-                    chunk_id,
-                    cid,
-                    chunk_index,
-                    chunk_xxh64,
-                    nature,
-                    solution,
-                    title,
-                    number,
-                    decision_date,
-                    jurisdiction,
-                    formation,
-                    text_content,
-                    chunk_text,
-                    embeddings,
-                )
-                data_to_insert.append(new_data)
-            except PermissionDeniedError as e:
-                logger.error(
-                    f"PermissionDeniedError (API key issue) for file {file_name}: {e}"
-                )
-                raise e
+                    new_data = (
+                        chunk_id,
+                        cid,
+                        chunk_index,
+                        chunk_xxh64,
+                        nature,
+                        solution,
+                        title,
+                        number,
+                        decision_date,
+                        jurisdiction,
+                        formation,
+                        text_content,
+                        chunk_text,
+                        embeddings,
+                    )
+                    data_to_insert.append(new_data)
+                except PermissionDeniedError as e:
+                    logger.error(
+                        f"PermissionDeniedError (API key issue) for file {file_name}: {e}"
+                    )
+                    raise e
 
             if data_to_insert:
                 insert_data(data=data_to_insert, table_name=table_name)
@@ -981,6 +1044,8 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
             raise e
 
     elif file_name.startswith("JORFDOLE") and file_name.endswith(".xml"):
+        # logger.info(f"Not processing JORFDOLE file: {file_name}")
+        return
         table_name = "dole"
         try:
             cid = root.find(".//ID").text  # doc_id
@@ -1975,56 +2040,60 @@ def _process_bofip_document(
     soup = BeautifulSoup(html_content, "lxml")
     raw_text = soup.get_text(separator="\n", strip=True)
     lines = [line for line in raw_text.splitlines() if line.strip()]
-    text = "\n".join(lines)
+    text_content = "\n".join(lines)
+    data_to_insert = []
+    chunks = make_chunks(text=text_content)
+    for k, text in enumerate(chunks):
+        # ── Enriched chunk_text for embedding ───────────────────────────────────
+        chunk_text_parts = []
+        if title:
+            chunk_text_parts.append(title)
+        if contenu_type:
+            chunk_text_parts.append(f"Type: {contenu_type}")
+        if subjects:
+            chunk_text_parts.append(f"Domaine: {', '.join(subjects)}")
+        if category_path:
+            chunk_text_parts.append(f"Chemin: {category_path}")
+        if publication_date:
+            chunk_text_parts.append(f"Date de publication: {publication_date}")
+        if text:
+            chunk_text_parts.append(text)
+        chunk_text = "\n".join(chunk_text_parts)
 
-    # ── Enriched chunk_text for embedding ───────────────────────────────────
-    chunk_text_parts = []
-    if title:
-        chunk_text_parts.append(title)
-    if contenu_type:
-        chunk_text_parts.append(f"Type: {contenu_type}")
-    if subjects:
-        chunk_text_parts.append(f"Domaine: {', '.join(subjects)}")
-    if category_path:
-        chunk_text_parts.append(f"Chemin: {category_path}")
-    if publication_date:
-        chunk_text_parts.append(f"Date de publication: {publication_date}")
-    if text:
-        chunk_text_parts.append(text)
-    chunk_text = "\n".join(chunk_text_parts)
+        chunk_index = k + 1  # Start chunk numbering from 1
+        chunk_id = f"{doc_id}_{chunk_index}"
+        chunk_xxh64 = xxhash.xxh64(chunk_text.encode("utf-8"), seed=2025).hexdigest()
 
-    chunk_index = 1  # Whole document = one chunk
-    chunk_id = f"{doc_id}_{chunk_index}"
-    chunk_xxh64 = xxhash.xxh64(chunk_text.encode("utf-8"), seed=2025).hexdigest()
+        try:
+            embeddings = generate_embeddings_with_retry(
+                data=chunk_text, attempts=5, model=model
+            )[0]
+        except PermissionDeniedError as e:
+            logger.error(f"PermissionDeniedError generating embedding for {doc_id}: {e}")
+            raise
 
-    try:
-        embeddings = generate_embeddings_with_retry(
-            data=chunk_text, attempts=5, model=model
-        )[0]
-    except PermissionDeniedError as e:
-        logger.error(f"PermissionDeniedError generating embedding for {doc_id}: {e}")
-        raise
+        new_data = (
+            chunk_id,          # PRIMARY KEY
+            doc_id,            # bofip:contenu_id (canonical identifier)
+            chunk_index,       # k+1 (1 for the first chunk, 2 for the second, etc.)
+            chunk_xxh64,       # xxhash of chunk_text
+            title,             # dc:title
+            contenu_id,        # bofip:contenu_id
+            contenu_type,      # bofip:contenu_type
+            document_number,   # first dc:identifier (e.g. "6551-PGP")
+            bofip_url,         # second dc:identifier (source URL)
+            publication_date,  # dc:date
+            subjects,          # deduplicated dc:subject values
+            category_path,     # full taxonomy path from the archive
+            json.dumps(links, ensure_ascii=False),  # dc:relation links
+            text,              # plain text extracted from data.html
+            chunk_text,        # enriched text used for embedding
+            embeddings,        # embedding vector
+        )
 
-    new_data = (
-        chunk_id,          # PRIMARY KEY
-        doc_id,            # bofip:contenu_id (canonical identifier)
-        chunk_index,       # 1 — one chunk per document
-        chunk_xxh64,       # xxhash of chunk_text
-        title,             # dc:title
-        contenu_id,        # bofip:contenu_id
-        contenu_type,      # bofip:contenu_type
-        document_number,   # first dc:identifier (e.g. "6551-PGP")
-        bofip_url,         # second dc:identifier (source URL)
-        publication_date,  # dc:date
-        subjects,          # deduplicated dc:subject values
-        category_path,     # full taxonomy path from the archive
-        json.dumps(links, ensure_ascii=False),  # dc:relation links
-        text,              # plain text extracted from data.html
-        chunk_text,        # enriched text used for embedding
-        embeddings,        # embedding vector
-    )
+        data_to_insert.append(new_data)
 
-    return [new_data]
+    return data_to_insert
 
 
 def _process_bofip_tgz(

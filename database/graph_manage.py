@@ -109,6 +109,21 @@ def _safe_query(query: str, params: dict):
         )
 
 
+def _group_rows_by_doc_id(data_to_insert: list) -> dict:
+    """Group chunk rows by ``doc_id`` and sort each group by chunk index."""
+    grouped: dict = {}
+    for row in data_to_insert:
+        if not row or len(row) < 3:
+            continue
+        doc_id = row[1]
+        grouped.setdefault(doc_id, []).append(row)
+
+    for doc_id in grouped:
+        grouped[doc_id].sort(key=lambda row: row[2] if row[2] is not None else 0)
+
+    return grouped
+
+
 # ── Schema initialisation ────────────────────────────────────────────────────
 
 
@@ -146,40 +161,10 @@ def init_graph_schema():
 
 
 def upsert_legi_node(data_to_insert: list):
-    """Upsert a single ``LegalText`` node from a LEGI chunk tuple.
+    """Upsert LEGI document nodes from one or many chunk rows.
 
-    The document is processed as a single chunk; metadata and the chunk text
-    are stored as scalar properties on the ``LegalText`` node.
-
-    Properties set on the node:
-
-    * Metadata from the chunk: ``title``, ``full_title``, ``nature``,
-      ``category``, ``ministry``, ``status``, ``number``, ``start_date``,
-      ``end_date``.
-    * ``chunk_text``  — the single chunk text for the document.
-    * ``embedding``   — the embedding vector for the chunk (when non-``None``).
-
-    Relationships created:
-
-    * ``BELONGS_TO_CODE`` → ``LegalCode`` (when *category* is non-empty).
-    * ``ISSUED_BY``       → ``Ministry``  (when *ministry* is non-empty).
-    * ``REFERENCES``      → ``LegalText`` for each entry in the LIENS list
-      stored in *links_json* (using ``doc_id`` or ``text_doc_id``).
-
-    Tuple layout (column indices):
-
-    .. code-block::
-
-        0  chunk_id        1  doc_id          2  chunk_index
-        3  chunk_xxh64     4  nature          5  category
-        6  ministry        7  status          8  title
-        9  full_title     10  subtitles      11  number
-       12  start_date     13  end_date       14  nota
-       15  links_json     16  text           17  chunk_text
-       18  embeddings
-
-    Args:
-        data_to_insert: List containing a single tuple for the document chunk.
+    Rows are grouped by doc_id, chunk data is aggregated as list properties,
+    and relationships are deduplicated across all chunks.
     """
     if not data_to_insert:
         return
@@ -189,91 +174,104 @@ def upsert_legi_node(data_to_insert: list):
         return
 
     try:
-        first = data_to_insert[0]
-        doc_id = first[1]
+        docs = _group_rows_by_doc_id(data_to_insert)
+        for doc_id, rows in docs.items():
+            first = rows[0]
+            chunk_ids = [row[0] for row in rows if row[0]]
+            chunk_indexes = [row[2] for row in rows if row[2] is not None]
+            chunk_texts = [row[17] or "" for row in rows]
+            full_text = "\n".join(text for text in chunk_texts if text)
+            embeddings = [row[18] for row in rows if row[18] is not None]
 
-        # Single chunk text and embedding
-        chunk_text = first[17] or ""
-        embedding = first[18]
-
-        # 1. Upsert LegalText doc node with chunk data as scalar properties
-        params = {
-            "doc_id": doc_id,
-            "title": first[8] or "",
-            "full_title": first[9] or "",
-            "nature": first[4] or "",
-            "category": first[5] or "",
-            "ministry": first[6] or "",
-            "status": first[7] or "",
-            "number": first[11] or "",
-            "start_date": first[12] or "",
-            "end_date": first[13] or "",
-            "chunk_text": chunk_text,
-        }
-        query = """
-            MERGE (d:LegalText {doc_id: $doc_id})
-            SET d.title        = $title,
-                d.full_title   = $full_title,
-                d.nature       = $nature,
-                d.category     = $category,
-                d.ministry     = $ministry,
-                d.status       = $status,
-                d.number       = $number,
-                d.start_date   = $start_date,
-                d.end_date     = $end_date,
-                d.chunk_text   = $chunk_text
-            """
-        if embedding is not None:
-            query += " SET d.embedding = $embedding"
-            params["embedding"] = embedding
-        _safe_query(query, params)
-
-        # 2. BELONGS_TO_CODE
-        category = first[5]
-        if category:
+            # 1. Upsert LegalText doc node with aggregated chunk data
+            params = {
+                "doc_id": doc_id,
+                "title": first[8] or "",
+                "full_title": first[9] or "",
+                "nature": first[4] or "",
+                "category": first[5] or "",
+                "ministry": first[6] or "",
+                "status": first[7] or "",
+                "number": first[11] or "",
+                "start_date": first[12] or "",
+                "end_date": first[13] or "",
+                "chunk_ids": chunk_ids,
+                "chunk_indexes": chunk_indexes,
+                "chunk_count": len(rows),
+                "chunk_texts": chunk_texts,
+                "full_text": full_text,
+                "embeddings": embeddings,
+            }
             _safe_query(
                 """
-                MERGE (code:LegalCode {name: $name})
-                WITH code
-                MATCH (d:LegalText {doc_id: $doc_id})
-                MERGE (d)-[:BELONGS_TO_CODE]->(code)
+                MERGE (d:LegalText {doc_id: $doc_id})
+                SET d.title         = $title,
+                    d.full_title    = $full_title,
+                    d.nature        = $nature,
+                    d.category      = $category,
+                    d.ministry      = $ministry,
+                    d.status        = $status,
+                    d.number        = $number,
+                    d.start_date    = $start_date,
+                    d.end_date      = $end_date,
+                    d.chunk_ids     = $chunk_ids,
+                    d.chunk_indexes = $chunk_indexes,
+                    d.chunk_count   = $chunk_count,
+                    d.chunk_texts   = $chunk_texts,
+                    d.full_text     = $full_text,
+                    d.embeddings    = $embeddings
                 """,
-                {"name": category, "doc_id": doc_id},
+                params,
             )
 
-        # 3. ISSUED_BY
-        ministry = first[6]
-        if ministry:
-            _safe_query(
-                """
-                MERGE (m:Ministry {name: $name})
-                WITH m
-                MATCH (d:LegalText {doc_id: $doc_id})
-                MERGE (d)-[:ISSUED_BY]->(m)
-                """,
-                {"name": ministry, "doc_id": doc_id},
-            )
+            # 2. BELONGS_TO_CODE
+            category = first[5]
+            if category:
+                _safe_query(
+                    """
+                    MERGE (code:LegalCode {name: $name})
+                    WITH code
+                    MATCH (d:LegalText {doc_id: $doc_id})
+                    MERGE (d)-[:BELONGS_TO_CODE]->(code)
+                    """,
+                    {"name": category, "doc_id": doc_id},
+                )
 
-        # 4. REFERENCES (from LIENS already stored in links_json)
-        try:
-            links = json.loads(first[15]) if first[15] else []
-        except (json.JSONDecodeError, TypeError):
-            links = []
+            # 3. ISSUED_BY
+            ministry = first[6]
+            if ministry:
+                _safe_query(
+                    """
+                    MERGE (m:Ministry {name: $name})
+                    WITH m
+                    MATCH (d:LegalText {doc_id: $doc_id})
+                    MERGE (d)-[:ISSUED_BY]->(m)
+                    """,
+                    {"name": ministry, "doc_id": doc_id},
+                )
 
-        for link in links:
-            # Prefer the article-level doc_id, fall back to text-level id
-            target_doc_id = link.get("doc_id") or link.get("text_doc_id")
-            if not target_doc_id:
-                continue
-            _safe_query(
-                """
-                MERGE (target:LegalText {doc_id: $target_id})
-                WITH target
-                MATCH (source:LegalText {doc_id: $source_id})
-                MERGE (source)-[:REFERENCES]->(target)
-                """,
-                {"target_id": target_doc_id, "source_id": doc_id},
-            )
+            # 4. REFERENCES (deduplicated from all chunk rows)
+            target_doc_ids = set()
+            for row in rows:
+                try:
+                    links = json.loads(row[15]) if row[15] else []
+                except (json.JSONDecodeError, TypeError):
+                    links = []
+                for link in links:
+                    target_doc_id = link.get("doc_id") or link.get("text_doc_id")
+                    if target_doc_id:
+                        target_doc_ids.add(target_doc_id)
+
+            for target_doc_id in target_doc_ids:
+                _safe_query(
+                    """
+                    MERGE (target:LegalText {doc_id: $target_id})
+                    WITH target
+                    MATCH (source:LegalText {doc_id: $source_id})
+                    MERGE (source)-[:REFERENCES]->(target)
+                    """,
+                    {"target_id": target_doc_id, "source_id": doc_id},
+                )
 
     except Exception as exc:
         logger.warning("upsert_legi_node failed (non-fatal): %s", exc)
@@ -283,17 +281,20 @@ def upsert_legi_node(data_to_insert: list):
 
 
 def upsert_jade_node(data_to_insert: list):
-    """Upsert a single ``JudicialDecision`` node from a JADE chunk tuple.
+    """Upsert one or more ``JudicialDecision`` nodes from JADE chunk rows.
 
-    The document is processed as a single chunk; metadata and the chunk text
-    are stored as scalar properties on the ``JudicialDecision`` node.
+    ``data_to_insert`` may contain many chunk tuples for the same document. The
+    function groups rows by ``doc_id`` and stores chunk-level data as lists on
+    the doc-level node.
 
     Properties set on the node:
 
     * Metadata from the chunk: ``nature``, ``solution``, ``title``,
       ``number``, ``decision_date``, ``jurisdiction``, ``formation``.
-    * ``chunk_text``  — the single chunk text for the document.
-    * ``embedding``   — the embedding vector for the chunk (when non-``None``).
+    * ``chunk_ids`` / ``chunk_indexes`` / ``chunk_count`` for traceability.
+    * ``chunk_texts`` — list of chunk texts in ``chunk_index`` order.
+    * ``full_text``   — newline-joined full document text.
+    * ``embeddings``  — list of chunk embedding vectors.
 
     Relationships created:
 
@@ -310,7 +311,7 @@ def upsert_jade_node(data_to_insert: list):
        12  chunk_text    13  embeddings
 
     Args:
-        data_to_insert: List containing a single tuple for the document chunk.
+        data_to_insert: List of chunk tuples for one or many JADE documents.
     """
     if not data_to_insert:
         return
@@ -320,53 +321,64 @@ def upsert_jade_node(data_to_insert: list):
         return
 
     try:
-        first = data_to_insert[0]
-        doc_id = first[1]
+        docs = _group_rows_by_doc_id(data_to_insert)
+        for doc_id, rows in docs.items():
+            first = rows[0]
+            chunk_ids = [row[0] for row in rows if row[0]]
+            chunk_indexes = [row[2] for row in rows if row[2] is not None]
+            chunk_texts = [row[12] or "" for row in rows]
+            full_text = "\n".join(text for text in chunk_texts if text)
+            embeddings = [row[13] for row in rows if row[13] is not None]
 
-        # Single chunk text and embedding
-        chunk_text = first[12] or ""
-        embedding = first[13]
-
-        # 1. Upsert JudicialDecision doc node with chunk data as scalar properties
-        params = {
-            "doc_id": doc_id,
-            "nature": first[4] or "",
-            "solution": first[5] or "",
-            "title": first[6] or "",
-            "number": first[7] or "",
-            "decision_date": first[8] or "",
-            "jurisdiction": first[9] or "",
-            "formation": first[10] or "",
-            "chunk_text": chunk_text,
-        }
-        query = """
-            MERGE (d:JudicialDecision {doc_id: $doc_id})
-            SET d.nature        = $nature,
-                d.solution      = $solution,
-                d.title         = $title,
-                d.number        = $number,
-                d.decision_date = $decision_date,
-                d.jurisdiction  = $jurisdiction,
-                d.formation     = $formation,
-                d.chunk_text    = $chunk_text
-            """
-        if embedding is not None:
-            query += " SET d.embedding = $embedding"
-            params["embedding"] = embedding
-        _safe_query(query, params)
-
-        # 2. DECIDED_BY
-        jurisdiction = first[9]
-        if jurisdiction:
+            # 1. Upsert JudicialDecision doc node with aggregated chunk data
+            params = {
+                "doc_id": doc_id,
+                "nature": first[4] or "",
+                "solution": first[5] or "",
+                "title": first[6] or "",
+                "number": first[7] or "",
+                "decision_date": first[8] or "",
+                "jurisdiction": first[9] or "",
+                "formation": first[10] or "",
+                "chunk_ids": chunk_ids,
+                "chunk_indexes": chunk_indexes,
+                "chunk_count": len(rows),
+                "chunk_texts": chunk_texts,
+                "full_text": full_text,
+                "embeddings": embeddings,
+            }
             _safe_query(
                 """
-                MERGE (court:Court {name: $name})
-                WITH court
-                MATCH (d:JudicialDecision {doc_id: $doc_id})
-                MERGE (d)-[:DECIDED_BY]->(court)
+                MERGE (d:JudicialDecision {doc_id: $doc_id})
+                SET d.nature        = $nature,
+                    d.solution      = $solution,
+                    d.title         = $title,
+                    d.number        = $number,
+                    d.decision_date = $decision_date,
+                    d.jurisdiction  = $jurisdiction,
+                    d.formation     = $formation,
+                    d.chunk_ids     = $chunk_ids,
+                    d.chunk_indexes = $chunk_indexes,
+                    d.chunk_count   = $chunk_count,
+                    d.chunk_texts   = $chunk_texts,
+                    d.full_text     = $full_text,
+                    d.embeddings    = $embeddings
                 """,
-                {"name": jurisdiction, "doc_id": doc_id},
+                params,
             )
+
+            # 2. DECIDED_BY
+            jurisdiction = first[9]
+            if jurisdiction:
+                _safe_query(
+                    """
+                    MERGE (court:Court {name: $name})
+                    WITH court
+                    MATCH (d:JudicialDecision {doc_id: $doc_id})
+                    MERGE (d)-[:DECIDED_BY]->(court)
+                    """,
+                    {"name": jurisdiction, "doc_id": doc_id},
+                )
 
     except Exception as exc:
         logger.warning("upsert_jade_node failed (non-fatal): %s", exc)
@@ -376,18 +388,21 @@ def upsert_jade_node(data_to_insert: list):
 
 
 def upsert_bofip_node(data_to_insert: list):
-    """Upsert a single ``TaxGuidance`` node from a BOFiP chunk tuple.
+    """Upsert one or more ``TaxGuidance`` nodes from BOFiP chunk rows.
 
-    Each BOFiP document is processed as a single chunk; metadata and the
-    chunk text are stored as scalar properties on the ``TaxGuidance`` node.
+    ``data_to_insert`` may contain many chunk tuples for the same document. The
+    function groups rows by ``doc_id`` and stores chunk-level data as lists on
+    the doc-level node.
 
     Properties set on the node:
 
     * Metadata from the chunk: ``title``, ``contenu_type``,
       ``document_number``, ``bofip_url``, ``date``, ``subjects``,
       ``category`` (from *category_path* — the existing BOFIP taxonomy field).
-    * ``chunk_text``  — the single chunk text for the document.
-    * ``embedding``   — the embedding vector for the chunk (when non-``None``).
+    * ``chunk_ids`` / ``chunk_indexes`` / ``chunk_count`` for traceability.
+    * ``chunk_texts`` — list of chunk texts in ``chunk_index`` order.
+    * ``full_text``   — newline-joined full document text.
+    * ``embeddings``  — list of chunk embedding vectors.
 
     Relationships created:
 
@@ -410,7 +425,7 @@ def upsert_bofip_node(data_to_insert: list):
     *category_path* (existing BOFIP field) as required by the graph ontology.
 
     Args:
-        data_to_insert: List containing a single tuple for the document chunk.
+        data_to_insert: List of chunk tuples for one or many BOFiP documents.
     """
     if not data_to_insert:
         return
@@ -420,78 +435,92 @@ def upsert_bofip_node(data_to_insert: list):
         return
 
     try:
-        first = data_to_insert[0]
-        doc_id = first[1]
-        subjects = first[10]
-        subjects_str = ", ".join(subjects) if subjects else ""
+        docs = _group_rows_by_doc_id(data_to_insert)
+        for doc_id, rows in docs.items():
+            first = rows[0]
+            subjects = first[10]
+            subjects_str = ", ".join(subjects) if subjects else ""
+            chunk_ids = [row[0] for row in rows if row[0]]
+            chunk_indexes = [row[2] for row in rows if row[2] is not None]
+            chunk_texts = [row[14] or "" for row in rows]
+            full_text = "\n".join(text for text in chunk_texts if text)
+            embeddings = [row[15] for row in rows if row[15] is not None]
 
-        # Single chunk text and embedding
-        chunk_text = first[14] or ""
-        embedding = first[15]
-
-        # 1. Upsert TaxGuidance doc node with chunk data as scalar properties
-        params = {
-            "doc_id": doc_id,
-            "title": first[4] or "",
-            "contenu_type": first[6] or "",
-            "document_number": first[7] or "",
-            "bofip_url": first[8] or "",
-            "date": first[9] or "",
-            "subjects": subjects_str,
-            # category_path is the existing BOFIP taxonomy field
-            "category": first[11] or "",
-            "chunk_text": chunk_text,
-        }
-        query = """
-            MERGE (d:TaxGuidance {doc_id: $doc_id})
-            SET d.title            = $title,
-                d.contenu_type     = $contenu_type,
-                d.document_number  = $document_number,
-                d.bofip_url        = $bofip_url,
-                d.date             = $date,
-                d.subjects         = $subjects,
-                d.category         = $category,
-                d.chunk_text       = $chunk_text
-            """
-        if embedding is not None:
-            query += " SET d.embedding = $embedding"
-            params["embedding"] = embedding
-        _safe_query(query, params)
-
-        # 2. BELONGS_TO_CODE (using category_path as the taxonomy identifier)
-        category_path = first[11]
-        if category_path:
+            # 1. Upsert TaxGuidance doc node with aggregated chunk data
+            params = {
+                "doc_id": doc_id,
+                "title": first[4] or "",
+                "contenu_type": first[6] or "",
+                "document_number": first[7] or "",
+                "bofip_url": first[8] or "",
+                "date": first[9] or "",
+                "subjects": subjects_str,
+                # category_path is the existing BOFIP taxonomy field
+                "category": first[11] or "",
+                "chunk_ids": chunk_ids,
+                "chunk_indexes": chunk_indexes,
+                "chunk_count": len(rows),
+                "chunk_texts": chunk_texts,
+                "full_text": full_text,
+                "embeddings": embeddings,
+            }
             _safe_query(
                 """
-                MERGE (code:TaxCode {name: $name})
-                WITH code
-                MATCH (d:TaxGuidance {doc_id: $doc_id})
-                MERGE (d)-[:BELONGS_TO_CODE]->(code)
+                MERGE (d:TaxGuidance {doc_id: $doc_id})
+                SET d.title            = $title,
+                    d.contenu_type     = $contenu_type,
+                    d.document_number  = $document_number,
+                    d.bofip_url        = $bofip_url,
+                    d.date             = $date,
+                    d.subjects         = $subjects,
+                    d.category         = $category,
+                    d.chunk_ids        = $chunk_ids,
+                    d.chunk_indexes    = $chunk_indexes,
+                    d.chunk_count      = $chunk_count,
+                    d.chunk_texts      = $chunk_texts,
+                    d.full_text        = $full_text,
+                    d.embeddings       = $embeddings
                 """,
-                {"name": category_path, "doc_id": doc_id},
+                params,
             )
 
-        # 3. REFERENCES (dc:relation links of type "references")
-        try:
-            links = json.loads(first[12]) if first[12] else []
-        except (json.JSONDecodeError, TypeError):
-            links = []
+            # 2. BELONGS_TO_CODE (using category_path as the taxonomy identifier)
+            category_path = first[11]
+            if category_path:
+                _safe_query(
+                    """
+                    MERGE (code:TaxCode {name: $name})
+                    WITH code
+                    MATCH (d:TaxGuidance {doc_id: $doc_id})
+                    MERGE (d)-[:BELONGS_TO_CODE]->(code)
+                    """,
+                    {"name": category_path, "doc_id": doc_id},
+                )
 
-        for link in links:
-            if link.get("type") != "references":
-                continue
-            target_id = link.get("id")
-            if not target_id:
-                continue
-            _safe_query(
-                """
-                MERGE (target:TaxGuidance {doc_id: $target_id})
-                WITH target
-                MATCH (source:TaxGuidance {doc_id: $source_id})
-                MERGE (source)-[:REFERENCES]->(target)
-                """,
-                {"target_id": target_id, "source_id": doc_id},
-            )
+            # 3. REFERENCES (dc:relation links of type "references")
+            target_ids = set()
+            for row in rows:
+                try:
+                    links = json.loads(row[12]) if row[12] else []
+                except (json.JSONDecodeError, TypeError):
+                    links = []
+                for link in links:
+                    if link.get("type") != "references":
+                        continue
+                    target_id = link.get("id")
+                    if target_id:
+                        target_ids.add(target_id)
+
+            for target_id in target_ids:
+                _safe_query(
+                    """
+                    MERGE (target:TaxGuidance {doc_id: $target_id})
+                    WITH target
+                    MATCH (source:TaxGuidance {doc_id: $source_id})
+                    MERGE (source)-[:REFERENCES]->(target)
+                    """,
+                    {"target_id": target_id, "source_id": doc_id},
+                )
 
     except Exception as exc:
         logger.warning("upsert_bofip_node failed (non-fatal): %s", exc)

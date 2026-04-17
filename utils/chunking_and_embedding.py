@@ -216,10 +216,11 @@ def _get_length_function(length_function: str):
     return lambda text: len(tokenizer.encode(text))
 
 
+
 def make_chunks(
     text: str,
-    chunk_size: int = 1500,
-    chunk_overlap: int = 0,
+    chunk_size: int = 7500,
+    chunk_overlap: int = 500,
     length_function=EMBEDDING_MODEL,
 ) -> list[str]:
     """
@@ -239,11 +240,47 @@ def make_chunks(
         return []
 
     length_fn = _get_length_function(length_function)
-
+    legal_separators = [
+        "\nI. ",    # Major divisions (Roman)
+        "\nII. ",
+        "\nIII. ",
+        "\nIV. ",
+        "\nV. ",
+        
+        "\n1° ",      # Numbered lists
+        "\n2° ",
+        "\n3° ",
+        "\n4° ",
+        "\n5° ",
+        "\na) ",      # Sub-letters
+        "\nb) ",
+        "\nc) ",      # Sub-letters
+        "\nd) ",
+        "\ne) ",      # Sub-letters
+        "\nA) ",
+        "\nB) ",      # Sub-letters
+        "\nC) ",
+        "\nD) ",
+        "\nE) ",
+        "\na. ",      # Sub-letters
+        "\nb. ",
+        "\nc. ",      # Sub-letters
+        "\nd. ",
+        "\ne. ",      # Sub-letters
+        "\nA. ",
+        "\nB. ",      # Sub-letters
+        "\nC. ",
+        "\nD. ",
+        "\nE. ",
+        "\n- ",      # Bullet points
+        "\n\n",      # Paragraphs
+        ". ",        # Sentences
+        " "          # Words (absolute fallback)
+    ]
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
-        separators=["\n\n", "\n", " ", ""],
+        separators=legal_separators,
         length_function=length_fn,
     )
     chunks = text_splitter.split_text(text)
