@@ -70,41 +70,7 @@ steps:
     waitFor:
       - 'push-app'
 
-  # Deploy the Airflow API server as a Cloud Run Service
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    id: 'deploy-airflow-api'
-    entrypoint: 'gcloud'
-    args:
-      - 'run'
-      - 'deploy'
-      - 'mediatech-airflow-apiserver'
-      - '--image'
-      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/mediatech:$COMMIT_SHA'
-      - '--region'
-      - '${_REGION}'
-      - '--platform'
-      - 'managed'
-      - '--no-allow-unauthenticated'
-      - '--port'
-      - '8080'
-      - '--command'
-      - 'airflow'
-      - '--args'
-      - 'api-server'
-      - '--set-env-vars=RUNNING_IN_DOCKER=true,AIRFLOW__CORE__EXECUTOR=LocalExecutor,AIRFLOW__CORE__LOAD_EXAMPLES=false'
-      - '--set-secrets'
-      - >-
-        POSTGRES_USER=mediatech-postgres-user:latest,
-        POSTGRES_PASSWORD=mediatech-postgres-password:latest,
-        POSTGRES_DB=mediatech-postgres-db:latest
-      - '--min-instances'
-      - '1'
-      - '--memory'
-      - '2Gi'
-      - '--cpu'
-      - '2'
-    waitFor:
-      - 'push-app'
+    
 
 substitutions:
   _REGION: europe-west1

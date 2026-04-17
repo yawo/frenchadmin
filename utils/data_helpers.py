@@ -19,8 +19,6 @@ from config import (
     get_logger,
 )
 
-from .sheets_parser import RagSource
-
 logger = get_logger(__name__)
 
 
@@ -512,16 +510,3 @@ def doc_to_chunk(doc: dict) -> str | None:
         chunk_text = "\n".join([doc["title"] + context, doc["text"]])
 
     return chunk_text
-
-
-def load_sheets(storage_dir: str, sources: str | list[str]):
-    documents = RagSource.get_sheets(
-        storage_dir=storage_dir,
-        sources=sources,
-        structured=False,
-    )
-    documents = [d for d in documents if d["text"][0]]
-    for doc in documents:
-        doc["text"] = doc["text"][0]
-
-    return documents

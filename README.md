@@ -179,9 +179,9 @@ Command examples:
   ```bash
   mediatech download_files --all
   ```
-- Download files from the `service_public` source:  
+- Download files from the `legi` source:  
   ```bash
-  mediatech download_files --source service_public
+   mediatech download_files --source legi
   ```
 - Download and process all files listed in [`data_config.json`](config/data_config.json):  
   ```bash
@@ -201,7 +201,7 @@ Command examples:
   ```
 - Upload parquet datasets to the Hugging Face repository:
   ```bash
-  mediatech upload_dataset --input data/parquet/service_public.parquet --dataset-name service-public
+   mediatech upload_dataset --input data/parquet/bofip.parquet --dataset-name bofip
   ```
 
 
@@ -222,6 +222,53 @@ python main.py download_files
 python main.py create_tables --model BAAI/bge-m3
 python main.py process_files --all --model BAAI/bge-m3
 ```
+
+### Performance and Optimization Flags
+
+The processing pipeline now exposes optimization switches via environment variables:
+
+```bash
+export ENABLE_BATCH_EMBEDDING=true
+export ENABLE_FAST_DB_INSERT=true
+export ENABLE_BATCH_GRAPH_UPSERT=true
+export ENABLE_PARALLEL_PROCESSING=false
+export ENABLE_PERF_TELEMETRY=true
+```
+
+Tuning variables:
+
+```bash
+export EMBEDDING_BATCH_MAX_SIZE=64
+export FAST_DB_INSERT_PAGE_SIZE=1000
+export MAX_WORKERS=4
+export BATCH_SIZE_DOCS=32
+```
+
+When telemetry is enabled, each run writes a JSON report in `data/perf_reports/`.
+
+### Benchmark and Regression Gate
+
+You can run the fixed-sample benchmark helper and enforce a regression gate:
+
+```bash
+python scripts/benchmark_pipeline.py \
+   --command "python main.py process_files --source legi --model louisbrulenaudet/lemone-embed-pro" \
+   --runs 3 \
+   --run-prefix process_legi \
+   --reports-dir data/perf_reports
+```
+
+Optional baseline gate (fails if runtime degrades by more than 10%):
+
+```bash
+python scripts/benchmark_pipeline.py \
+   --command "python main.py process_files --source legi --model louisbrulenaudet/lemone-embed-pro" \
+   --runs 3 \
+   --run-prefix process_legi \
+   --baseline data/perf_reports/process_legi_baseline.json \
+   --regression-threshold 0.10
+```
+
 ##### Using the [`update.sh`](update.sh) Script
 
 The [`update.sh`](update.sh) script allows you to run the entire data processing pipeline: downloading, table creation, vectorization, and export.  

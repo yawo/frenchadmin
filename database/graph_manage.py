@@ -38,6 +38,7 @@ except ImportError:
     _FALKORDB_PKG = False
 
 from config import (
+    ENABLE_BATCH_GRAPH_UPSERT,
     FALKORDB_GRAPH_NAME,
     FALKORDB_HOST,
     FALKORDB_PASSWORD,
@@ -183,7 +184,19 @@ def upsert_legi_node(data_to_insert: list):
             full_text = "\n".join(text for text in chunk_texts if text)
             embeddings = [row[18] for row in rows if row[18] is not None]
 
-            # 1. Upsert LegalText doc node with aggregated chunk data
+            # Collect references once and pass as parameter array.
+            target_doc_ids = set()
+            for row in rows:
+                try:
+                    links = json.loads(row[15]) if row[15] else []
+                except (json.JSONDecodeError, TypeError):
+                    links = []
+                for link in links:
+                    target_doc_id = link.get("doc_id") or link.get("text_doc_id")
+                    if target_doc_id:
+                        target_doc_ids.add(target_doc_id)
+
+            # Single document query: node upsert + optional relations + references.
             params = {
                 "doc_id": doc_id,
                 "title": first[8] or "",
@@ -201,77 +214,99 @@ def upsert_legi_node(data_to_insert: list):
                 "chunk_texts": chunk_texts,
                 "full_text": full_text,
                 "embeddings": embeddings,
+                "category": first[5] or "",
+                "ministry": first[6] or "",
+                "target_doc_ids": sorted(target_doc_ids),
             }
-            _safe_query(
-                """
-                MERGE (d:LegalText {doc_id: $doc_id})
-                SET d.title         = $title,
-                    d.full_title    = $full_title,
-                    d.nature        = $nature,
-                    d.category      = $category,
-                    d.ministry      = $ministry,
-                    d.status        = $status,
-                    d.number        = $number,
-                    d.start_date    = $start_date,
-                    d.end_date      = $end_date,
-                    d.chunk_ids     = $chunk_ids,
-                    d.chunk_indexes = $chunk_indexes,
-                    d.chunk_count   = $chunk_count,
-                    d.chunk_texts   = $chunk_texts,
-                    d.full_text     = $full_text,
-                    d.embeddings    = $embeddings
-                """,
-                params,
-            )
-
-            # 2. BELONGS_TO_CODE
-            category = first[5]
-            if category:
+            if ENABLE_BATCH_GRAPH_UPSERT:
                 _safe_query(
                     """
-                    MERGE (code:LegalCode {name: $name})
-                    WITH code
-                    MATCH (d:LegalText {doc_id: $doc_id})
-                    MERGE (d)-[:BELONGS_TO_CODE]->(code)
-                    """,
-                    {"name": category, "doc_id": doc_id},
-                )
+                    MERGE (d:LegalText {doc_id: $doc_id})
+                    SET d.title         = $title,
+                        d.full_title    = $full_title,
+                        d.nature        = $nature,
+                        d.category      = $category,
+                        d.ministry      = $ministry,
+                        d.status        = $status,
+                        d.number        = $number,
+                        d.start_date    = $start_date,
+                        d.end_date      = $end_date,
+                        d.chunk_ids     = $chunk_ids,
+                        d.chunk_indexes = $chunk_indexes,
+                        d.chunk_count   = $chunk_count,
+                        d.chunk_texts   = $chunk_texts,
+                        d.full_text     = $full_text,
+                        d.embeddings    = $embeddings
 
-            # 3. ISSUED_BY
-            ministry = first[6]
-            if ministry:
+                    FOREACH (_ IN CASE WHEN $category <> '' THEN [1] ELSE [] END |
+                        MERGE (code:LegalCode {name: $category})
+                        MERGE (d)-[:BELONGS_TO_CODE]->(code)
+                    )
+
+                    FOREACH (_ IN CASE WHEN $ministry <> '' THEN [1] ELSE [] END |
+                        MERGE (m:Ministry {name: $ministry})
+                        MERGE (d)-[:ISSUED_BY]->(m)
+                    )
+
+                    FOREACH (target_id IN $target_doc_ids |
+                        MERGE (target:LegalText {doc_id: target_id})
+                        MERGE (d)-[:REFERENCES]->(target)
+                    )
+                    """,
+                    params,
+                )
+            else:
                 _safe_query(
                     """
-                    MERGE (m:Ministry {name: $name})
-                    WITH m
-                    MATCH (d:LegalText {doc_id: $doc_id})
-                    MERGE (d)-[:ISSUED_BY]->(m)
+                    MERGE (d:LegalText {doc_id: $doc_id})
+                    SET d.title         = $title,
+                        d.full_title    = $full_title,
+                        d.nature        = $nature,
+                        d.category      = $category,
+                        d.ministry      = $ministry,
+                        d.status        = $status,
+                        d.number        = $number,
+                        d.start_date    = $start_date,
+                        d.end_date      = $end_date,
+                        d.chunk_ids     = $chunk_ids,
+                        d.chunk_indexes = $chunk_indexes,
+                        d.chunk_count   = $chunk_count,
+                        d.chunk_texts   = $chunk_texts,
+                        d.full_text     = $full_text,
+                        d.embeddings    = $embeddings
                     """,
-                    {"name": ministry, "doc_id": doc_id},
+                    params,
                 )
-
-            # 4. REFERENCES (deduplicated from all chunk rows)
-            target_doc_ids = set()
-            for row in rows:
-                try:
-                    links = json.loads(row[15]) if row[15] else []
-                except (json.JSONDecodeError, TypeError):
-                    links = []
-                for link in links:
-                    target_doc_id = link.get("doc_id") or link.get("text_doc_id")
-                    if target_doc_id:
-                        target_doc_ids.add(target_doc_id)
-
-            for target_doc_id in target_doc_ids:
-                _safe_query(
-                    """
-                    MERGE (target:LegalText {doc_id: $target_id})
-                    WITH target
-                    MATCH (source:LegalText {doc_id: $source_id})
-                    MERGE (source)-[:REFERENCES]->(target)
-                    """,
-                    {"target_id": target_doc_id, "source_id": doc_id},
-                )
+                if params["category"]:
+                    _safe_query(
+                        """
+                        MERGE (code:LegalCode {name: $name})
+                        WITH code
+                        MATCH (d:LegalText {doc_id: $doc_id})
+                        MERGE (d)-[:BELONGS_TO_CODE]->(code)
+                        """,
+                        {"name": params["category"], "doc_id": doc_id},
+                    )
+                if params["ministry"]:
+                    _safe_query(
+                        """
+                        MERGE (m:Ministry {name: $name})
+                        WITH m
+                        MATCH (d:LegalText {doc_id: $doc_id})
+                        MERGE (d)-[:ISSUED_BY]->(m)
+                        """,
+                        {"name": params["ministry"], "doc_id": doc_id},
+                    )
+                for target_id in params["target_doc_ids"]:
+                    _safe_query(
+                        """
+                        MERGE (target:LegalText {doc_id: $target_id})
+                        WITH target
+                        MATCH (source:LegalText {doc_id: $source_id})
+                        MERGE (source)-[:REFERENCES]->(target)
+                        """,
+                        {"target_id": target_id, "source_id": doc_id},
+                    )
 
     except Exception as exc:
         logger.warning("upsert_legi_node failed (non-fatal): %s", exc)
@@ -330,7 +365,6 @@ def upsert_jade_node(data_to_insert: list):
             full_text = "\n".join(text for text in chunk_texts if text)
             embeddings = [row[13] for row in rows if row[13] is not None]
 
-            # 1. Upsert JudicialDecision doc node with aggregated chunk data
             params = {
                 "doc_id": doc_id,
                 "nature": first[4] or "",
@@ -346,39 +380,63 @@ def upsert_jade_node(data_to_insert: list):
                 "chunk_texts": chunk_texts,
                 "full_text": full_text,
                 "embeddings": embeddings,
+                "jurisdiction_value": first[9] or "",
             }
-            _safe_query(
-                """
-                MERGE (d:JudicialDecision {doc_id: $doc_id})
-                SET d.nature        = $nature,
-                    d.solution      = $solution,
-                    d.title         = $title,
-                    d.number        = $number,
-                    d.decision_date = $decision_date,
-                    d.jurisdiction  = $jurisdiction,
-                    d.formation     = $formation,
-                    d.chunk_ids     = $chunk_ids,
-                    d.chunk_indexes = $chunk_indexes,
-                    d.chunk_count   = $chunk_count,
-                    d.chunk_texts   = $chunk_texts,
-                    d.full_text     = $full_text,
-                    d.embeddings    = $embeddings
-                """,
-                params,
-            )
-
-            # 2. DECIDED_BY
-            jurisdiction = first[9]
-            if jurisdiction:
+            if ENABLE_BATCH_GRAPH_UPSERT:
                 _safe_query(
                     """
-                    MERGE (court:Court {name: $name})
-                    WITH court
-                    MATCH (d:JudicialDecision {doc_id: $doc_id})
-                    MERGE (d)-[:DECIDED_BY]->(court)
+                    MERGE (d:JudicialDecision {doc_id: $doc_id})
+                    SET d.nature        = $nature,
+                        d.solution      = $solution,
+                        d.title         = $title,
+                        d.number        = $number,
+                        d.decision_date = $decision_date,
+                        d.jurisdiction  = $jurisdiction,
+                        d.formation     = $formation,
+                        d.chunk_ids     = $chunk_ids,
+                        d.chunk_indexes = $chunk_indexes,
+                        d.chunk_count   = $chunk_count,
+                        d.chunk_texts   = $chunk_texts,
+                        d.full_text     = $full_text,
+                        d.embeddings    = $embeddings
+
+                    FOREACH (_ IN CASE WHEN $jurisdiction_value <> '' THEN [1] ELSE [] END |
+                        MERGE (court:Court {name: $jurisdiction_value})
+                        MERGE (d)-[:DECIDED_BY]->(court)
+                    )
                     """,
-                    {"name": jurisdiction, "doc_id": doc_id},
+                    params,
                 )
+            else:
+                _safe_query(
+                    """
+                    MERGE (d:JudicialDecision {doc_id: $doc_id})
+                    SET d.nature        = $nature,
+                        d.solution      = $solution,
+                        d.title         = $title,
+                        d.number        = $number,
+                        d.decision_date = $decision_date,
+                        d.jurisdiction  = $jurisdiction,
+                        d.formation     = $formation,
+                        d.chunk_ids     = $chunk_ids,
+                        d.chunk_indexes = $chunk_indexes,
+                        d.chunk_count   = $chunk_count,
+                        d.chunk_texts   = $chunk_texts,
+                        d.full_text     = $full_text,
+                        d.embeddings    = $embeddings
+                    """,
+                    params,
+                )
+                if params["jurisdiction_value"]:
+                    _safe_query(
+                        """
+                        MERGE (court:Court {name: $name})
+                        WITH court
+                        MATCH (d:JudicialDecision {doc_id: $doc_id})
+                        MERGE (d)-[:DECIDED_BY]->(court)
+                        """,
+                        {"name": params["jurisdiction_value"], "doc_id": doc_id},
+                    )
 
     except Exception as exc:
         logger.warning("upsert_jade_node failed (non-fatal): %s", exc)
@@ -446,7 +504,19 @@ def upsert_bofip_node(data_to_insert: list):
             full_text = "\n".join(text for text in chunk_texts if text)
             embeddings = [row[15] for row in rows if row[15] is not None]
 
-            # 1. Upsert TaxGuidance doc node with aggregated chunk data
+            target_ids = set()
+            for row in rows:
+                try:
+                    links = json.loads(row[12]) if row[12] else []
+                except (json.JSONDecodeError, TypeError):
+                    links = []
+                for link in links:
+                    if link.get("type") != "references":
+                        continue
+                    target_id = link.get("id")
+                    if target_id:
+                        target_ids.add(target_id)
+
             params = {
                 "doc_id": doc_id,
                 "title": first[4] or "",
@@ -463,64 +533,79 @@ def upsert_bofip_node(data_to_insert: list):
                 "chunk_texts": chunk_texts,
                 "full_text": full_text,
                 "embeddings": embeddings,
+                "category_path": first[11] or "",
+                "target_ids": sorted(target_ids),
             }
-            _safe_query(
-                """
-                MERGE (d:TaxGuidance {doc_id: $doc_id})
-                SET d.title            = $title,
-                    d.contenu_type     = $contenu_type,
-                    d.document_number  = $document_number,
-                    d.bofip_url        = $bofip_url,
-                    d.date             = $date,
-                    d.subjects         = $subjects,
-                    d.category         = $category,
-                    d.chunk_ids        = $chunk_ids,
-                    d.chunk_indexes    = $chunk_indexes,
-                    d.chunk_count      = $chunk_count,
-                    d.chunk_texts      = $chunk_texts,
-                    d.full_text        = $full_text,
-                    d.embeddings       = $embeddings
-                """,
-                params,
-            )
-
-            # 2. BELONGS_TO_CODE (using category_path as the taxonomy identifier)
-            category_path = first[11]
-            if category_path:
+            if ENABLE_BATCH_GRAPH_UPSERT:
                 _safe_query(
                     """
-                    MERGE (code:TaxCode {name: $name})
-                    WITH code
-                    MATCH (d:TaxGuidance {doc_id: $doc_id})
-                    MERGE (d)-[:BELONGS_TO_CODE]->(code)
+                    MERGE (d:TaxGuidance {doc_id: $doc_id})
+                    SET d.title            = $title,
+                        d.contenu_type     = $contenu_type,
+                        d.document_number  = $document_number,
+                        d.bofip_url        = $bofip_url,
+                        d.date             = $date,
+                        d.subjects         = $subjects,
+                        d.category         = $category,
+                        d.chunk_ids        = $chunk_ids,
+                        d.chunk_indexes    = $chunk_indexes,
+                        d.chunk_count      = $chunk_count,
+                        d.chunk_texts      = $chunk_texts,
+                        d.full_text        = $full_text,
+                        d.embeddings       = $embeddings
+
+                    FOREACH (_ IN CASE WHEN $category_path <> '' THEN [1] ELSE [] END |
+                        MERGE (code:TaxCode {name: $category_path})
+                        MERGE (d)-[:BELONGS_TO_CODE]->(code)
+                    )
+
+                    FOREACH (target_id IN $target_ids |
+                        MERGE (target:TaxGuidance {doc_id: target_id})
+                        MERGE (d)-[:REFERENCES]->(target)
+                    )
                     """,
-                    {"name": category_path, "doc_id": doc_id},
+                    params,
                 )
-
-            # 3. REFERENCES (dc:relation links of type "references")
-            target_ids = set()
-            for row in rows:
-                try:
-                    links = json.loads(row[12]) if row[12] else []
-                except (json.JSONDecodeError, TypeError):
-                    links = []
-                for link in links:
-                    if link.get("type") != "references":
-                        continue
-                    target_id = link.get("id")
-                    if target_id:
-                        target_ids.add(target_id)
-
-            for target_id in target_ids:
+            else:
                 _safe_query(
                     """
-                    MERGE (target:TaxGuidance {doc_id: $target_id})
-                    WITH target
-                    MATCH (source:TaxGuidance {doc_id: $source_id})
-                    MERGE (source)-[:REFERENCES]->(target)
+                    MERGE (d:TaxGuidance {doc_id: $doc_id})
+                    SET d.title            = $title,
+                        d.contenu_type     = $contenu_type,
+                        d.document_number  = $document_number,
+                        d.bofip_url        = $bofip_url,
+                        d.date             = $date,
+                        d.subjects         = $subjects,
+                        d.category         = $category,
+                        d.chunk_ids        = $chunk_ids,
+                        d.chunk_indexes    = $chunk_indexes,
+                        d.chunk_count      = $chunk_count,
+                        d.chunk_texts      = $chunk_texts,
+                        d.full_text        = $full_text,
+                        d.embeddings       = $embeddings
                     """,
-                    {"target_id": target_id, "source_id": doc_id},
+                    params,
                 )
+                if params["category_path"]:
+                    _safe_query(
+                        """
+                        MERGE (code:TaxCode {name: $name})
+                        WITH code
+                        MATCH (d:TaxGuidance {doc_id: $doc_id})
+                        MERGE (d)-[:BELONGS_TO_CODE]->(code)
+                        """,
+                        {"name": params["category_path"], "doc_id": doc_id},
+                    )
+                for target_id in params["target_ids"]:
+                    _safe_query(
+                        """
+                        MERGE (target:TaxGuidance {doc_id: $target_id})
+                        WITH target
+                        MATCH (source:TaxGuidance {doc_id: $source_id})
+                        MERGE (source)-[:REFERENCES]->(target)
+                        """,
+                        {"target_id": target_id, "source_id": doc_id},
+                    )
 
     except Exception as exc:
         logger.warning("upsert_bofip_node failed (non-fatal): %s", exc)

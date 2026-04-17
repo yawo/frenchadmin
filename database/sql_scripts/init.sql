@@ -1,4 +1,4 @@
-CREATE DATABASE airflow;
+
 CREATE DATABASE mediatech;
 
 \connect mediatech;

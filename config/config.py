@@ -62,54 +62,15 @@ def get_env_variable_path(var_name: str, default_value: str = None):
 
 # Data source mapping
 SOURCE_MAP = {
-    "service_public": [
-        "service_public_part",
-        "service_public_pro",
-    ],
-    "travail_emploi": ["travail_emploi"],
     "legi": ["legi"],
     "jade": ["jade"],
     "bofip": ["bofip"],
-    "cnil": ["cnil"],
-    "state_administrations_directory": ["state_administrations_directory"],
-    "local_administrations_directory": ["local_administrations_directory"],
-    "constit": ["constit"],
-    "dole": ["dole"],
-    "data_gouv_datasets_catalog": ["data_gouv_datasets_catalog"],
 }
 
 # Data folders
-CNIL_DATA_FOLDER = get_env_variable_path("CNIL_DATA_FOLDER", "data/unprocessed/cnil")
-CONSTIT_DATA_FOLDER = get_env_variable_path(
-    "CONSTIT_DATA_FOLDER", "data/unprocessed/constit"
-)
-LOCAL_ADMINISTRATIONS_DIRECTORY_FOLDER = get_env_variable_path(
-    "LOCAL_ADMINISTRATIONS_DIRECTORY_FOLDER",
-    "data/unprocessed/local_administrations_directory",
-)
-STATE_ADMINISTRATIONS_DIRECTORY_FOLDER = get_env_variable_path(
-    "STATE_ADMINISTRATIONS_DIRECTORY_FOLDER",
-    "data/unprocessed/state_administrations_directory",
-)
-DOLE_DATA_FOLDER = get_env_variable_path("DOLE_DATA_FOLDER", "data/unprocessed/dole")
 JADE_DATA_FOLDER = get_env_variable_path("JADE_DATA_FOLDER", "data/unprocessed/jade")
 BOFIP_DATA_FOLDER = get_env_variable_path("BOFIP_DATA_FOLDER", "data/unprocessed/bofip")
 LEGI_DATA_FOLDER = get_env_variable_path("LEGI_DATA_FOLDER", "data/unprocessed/legi")
-TRAVAIL_EMPLOI_DATA_FOLDER = get_env_variable_path(
-    "TRAVAIL_EMPLOI_DATA_FOLDER", "data/unprocessed/travail_emploi"
-)
-SERVICE_PUBLIC_PRO_DATA_FOLDER = get_env_variable_path(
-    "SERVICE_PUBLIC_PRO_DATA_FOLDER",
-    "data/unprocessed/service_public_pro",
-)
-SERVICE_PUBLIC_PART_DATA_FOLDER = get_env_variable_path(
-    "SERVICE_PUBLIC_PART_DATA_FOLDER",
-    "data/unprocessed/service_public_part",
-)
-DATA_GOUV_DATASETS_CATALOG_DATA_FOLDER = get_env_variable_path(
-    "DATA_GOUV_DATASETS_CATALOG_DATA_FOLDER",
-    "data/unprocessed/data_gouv_datasets_catalog",
-)
 
 # LLM API configuration (OpenRouter)
 API_URL = os.getenv("API_URL", "https://openrouter.ai/api/v1")
@@ -121,3 +82,36 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "louisbrulenaudet/lemone-embed-pr
 
 # Hugging Face configuration
 HF_TOKEN = os.getenv("HF_TOKEN", "your_hugging_face_token_here")
+
+
+def _get_env_bool(var_name: str, default: bool) -> bool:
+    """Read a boolean environment variable with permissive parsing."""
+    value = os.getenv(var_name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+# Optimization feature flags
+ENABLE_BATCH_EMBEDDING = _get_env_bool("ENABLE_BATCH_EMBEDDING", True)
+ENABLE_FAST_DB_INSERT = _get_env_bool("ENABLE_FAST_DB_INSERT", True)
+ENABLE_BATCH_GRAPH_UPSERT = _get_env_bool("ENABLE_BATCH_GRAPH_UPSERT", True)
+ENABLE_PARALLEL_PROCESSING = _get_env_bool("ENABLE_PARALLEL_PROCESSING", False)
+ENABLE_PERF_TELEMETRY = _get_env_bool("ENABLE_PERF_TELEMETRY", True)
+
+# Embedding tuning
+EMBEDDING_BATCH_MAX_SIZE = int(os.getenv("EMBEDDING_BATCH_MAX_SIZE", "64"))
+EMBEDDING_RETRY_ATTEMPTS = int(os.getenv("EMBEDDING_RETRY_ATTEMPTS", "5"))
+
+# PostgreSQL insert tuning
+FAST_DB_INSERT_PAGE_SIZE = int(os.getenv("FAST_DB_INSERT_PAGE_SIZE", "1000"))
+
+# Parallel processing tuning
+MAX_WORKERS = int(os.getenv("MAX_WORKERS", str(max(1, (os.cpu_count() or 2) // 2))))
+BATCH_SIZE_DOCS = int(os.getenv("BATCH_SIZE_DOCS", "32"))
+WRITE_CONCURRENCY = int(os.getenv("WRITE_CONCURRENCY", "1"))
+
+# Telemetry and profiling
+ENABLE_CPROFILE = _get_env_bool("ENABLE_CPROFILE", False)
+ENABLE_TRACEMALLOC = _get_env_bool("ENABLE_TRACEMALLOC", False)
+PERF_REPORTS_DIR = os.getenv("PERF_REPORTS_DIR", os.path.join(BASE_PATH, "data", "perf_reports"))

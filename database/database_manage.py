@@ -1,14 +1,18 @@
 import atexit
 import json
 import os
+import time
 import uuid
 from contextlib import contextmanager
 
 import duckdb
 import psycopg2
 from psycopg2 import pool
+from psycopg2.extras import execute_values
 from config import (
     EMBEDDING_MODEL,
+    ENABLE_FAST_DB_INSERT,
+    FAST_DB_INSERT_PAGE_SIZE,
     POSTGRES_DB,
     POSTGRES_HOST,
     POSTGRES_PASSWORD,
@@ -123,13 +127,13 @@ def create_all_tables(model=EMBEDDING_MODEL, delete_existing: bool = False):
         embedding_size = len(probe_vector)
 
         model_name = format_model_name(model)
-        CONFIG_TABLES = ["table_mapping"]
-        # Enabling Pgvector extension
+        config_tables = {"table_mapping"}
+        tax_tables = {"legi", "jade", "bofip"}
+
         try:
             cursor.execute("CREATE EXTENSION IF NOT EXISTS vector;")
             conn.commit()
 
-            # Checks if the extension is enabled
             cursor.execute("SELECT * FROM pg_extension WHERE extname = 'vector';")
             if cursor.fetchone() is None:
                 logger.error(
@@ -144,20 +148,17 @@ def create_all_tables(model=EMBEDDING_MODEL, delete_existing: bool = False):
         with open(config_file_path, "r") as file:
             config = json.load(file)
 
-        table_names = CONFIG_TABLES
-        table_names.extend([category for category in config.keys()])
+        configured_tax_tables = [name for name in config.keys() if name in tax_tables]
+        table_names = ["table_mapping", *configured_tax_tables]
 
         for table_name in table_names:
             if delete_existing:
-                # Drop the table if it exists
                 cursor.execute(f"DROP TABLE IF EXISTS {table_name.upper()} CASCADE;")
-
                 conn.commit()
                 logger.info(
                     f"Table '{table_name.upper()}' dropped successfully in database {POSTGRES_DB}"
                 )
 
-            # Checking if the table already exists
             cursor.execute(f"""
                 SELECT EXISTS (
                     SELECT 1
@@ -171,337 +172,135 @@ def create_all_tables(model=EMBEDDING_MODEL, delete_existing: bool = False):
                 logger.info(
                     f"Table '{table_name.upper()}' already exists in database {POSTGRES_DB}"
                 )
-
-                if table_name.lower() not in CONFIG_TABLES:
-                    # Check if doc_id index exists
+                if table_name.lower() not in config_tables:
                     index_name = f"idx_{table_name.lower()}_doc_id"
                     cursor.execute(f"""
                         SELECT EXISTS (
-                            SELECT 1 FROM pg_indexes 
-                            WHERE tablename = '{table_name.lower()}' 
+                            SELECT 1 FROM pg_indexes
+                            WHERE tablename = '{table_name.lower()}'
                             AND indexname = '{index_name}'
                         );
                     """)
-                    index_exists = cursor.fetchone()[0]
-
-                    if not index_exists:
-                        logger.info(
-                            f"Creating missing index {index_name} on existing table..."
-                        )
+                    if not cursor.fetchone()[0]:
                         cursor.execute(f"""
-                            CREATE INDEX IF NOT EXISTS {index_name} 
+                            CREATE INDEX IF NOT EXISTS {index_name}
                             ON {table_name.upper()}(doc_id);
                         """)
                         conn.commit()
                         logger.info(f"Index {index_name} created successfully")
-                    else:
-                        logger.info(f"Index {index_name} already exists")
+                continue
 
-            else:
-                # Create table if doesn't exist
-
-                if table_name.lower().endswith("directory"):
-                    cursor.execute(f"""
-                        CREATE TABLE {table_name.upper()} (
-                            chunk_id TEXT PRIMARY KEY,
-                            doc_id TEXT NOT NULL,
-                            chunk_xxh64 TEXT NOT NULL,
-                            types TEXT,
-                            name TEXT,
-                            mission_description TEXT,
-                            addresses JSONB,
-                            phone_numbers TEXT[],
-                            mails TEXT[],
-                            urls TEXT[],
-                            social_medias TEXT[],
-                            mobile_applications TEXT[],
-                            opening_hours TEXT,
-                            contact_forms TEXT[],
-                            additional_information TEXT,
-                            modification_date TEXT,
-                            siret TEXT,
-                            siren TEXT,
-                            people_in_charge JSONB,
-                            organizational_chart TEXT[],
-                            hierarchy JSONB,
-                            directory_url TEXT,
-                            chunk_text TEXT,
-                            "embeddings_{model_name}" vector({embedding_size}),
-                            UNIQUE(chunk_id)
-                        )
-                    """)
-
-                elif table_name.lower() == "travail_emploi":
-                    cursor.execute(f"""
-                        CREATE TABLE TRAVAIL_EMPLOI (
-                            chunk_id TEXT PRIMARY KEY,
-                            doc_id TEXT NOT NULL,
-                            chunk_index INTEGER NOT NULL,
-                            chunk_xxh64 TEXT NOT NULL,
-                            title TEXT,
-                            surtitle TEXT,
-                            source TEXT,
-                            introduction TEXT,
-                            date TEXT,
-                            url TEXT,
-                            context TEXT[],
-                            text TEXT,
-                            chunk_text TEXT,
-                            "embeddings_{model_name}" vector({embedding_size}),
-                            UNIQUE(chunk_id)
-                        )
-                    """)
-                elif table_name.lower() == "service_public":
-                    cursor.execute(f"""
-                        CREATE TABLE SERVICE_PUBLIC (
-                            chunk_id TEXT PRIMARY KEY,
-                            doc_id TEXT NOT NULL,
-                            chunk_index INTEGER NOT NULL,
-                            chunk_xxh64 TEXT NOT NULL,
-                            audience TEXT,
-                            theme TEXT,
-                            title TEXT,
-                            surtitle TEXT,
-                            source TEXT,
-                            introduction TEXT,
-                            url TEXT,
-                            related_questions JSONB,
-                            web_services JSONB,
-                            context TEXT[],
-                            text TEXT,
-                            chunk_text TEXT,
-                            "embeddings_{model_name}" vector({embedding_size}),
-                            UNIQUE(chunk_id)
-                        )
-                    """)
-
-                elif table_name.lower() == "cnil":
-                    cursor.execute(f"""
-                        CREATE TABLE CNIL (
-                            chunk_id TEXT PRIMARY KEY,
-                            doc_id TEXT NOT NULL,
-                            chunk_index INTEGER NOT NULL,
-                            chunk_xxh64 TEXT NOT NULL,
-                            nature TEXT,
-                            status TEXT,
-                            nature_delib TEXT,
-                            title TEXT,
-                            full_title TEXT,
-                            number TEXT,
-                            date TEXT,
-                            text TEXT,
-                            chunk_text TEXT,
-                            "embeddings_{model_name}" vector({embedding_size}),
-                            UNIQUE(chunk_id)
-                        )
-                    """)
-
-                elif table_name.lower() == "constit":
-                    cursor.execute(f"""
-                        CREATE TABLE CONSTIT (
-                            chunk_id TEXT PRIMARY KEY,
-                            doc_id TEXT NOT NULL,
-                            chunk_index INTEGER NOT NULL,
-                            chunk_xxh64 TEXT NOT NULL,
-                            nature TEXT,
-                            solution TEXT,
-                            title TEXT,
-                            number TEXT,
-                            decision_date TEXT,
-                            text TEXT,
-                            chunk_text TEXT,
-                            "embeddings_{model_name}" vector({embedding_size}),
-                            UNIQUE(chunk_id)
-                        )
-                    """)
-
-                elif table_name.lower() == "bofip":
-                    cursor.execute(f"""
-                        CREATE TABLE BOFIP (
-                            chunk_id TEXT PRIMARY KEY,
-                            doc_id TEXT NOT NULL,
-                            chunk_index INTEGER NOT NULL,
-                            chunk_xxh64 TEXT NOT NULL,
-                            title TEXT,
-                            contenu_id TEXT,
-                            contenu_type TEXT,
-                            document_number TEXT,
-                            bofip_url TEXT,
-                            publication_date TEXT,
-                            subjects TEXT[],
-                            category_path TEXT,
-                            links JSONB,
-                            text TEXT,
-                            chunk_text TEXT,
-                            "embeddings_{model_name}" vector({embedding_size}),
-                            UNIQUE(chunk_id)
-                        )
-                    """)
-
-                elif table_name.lower() == "dole":
-                    cursor.execute(f"""
-                        CREATE TABLE DOLE (
-                            chunk_id TEXT PRIMARY KEY,
-                            doc_id TEXT NOT NULL,
-                            chunk_index INTEGER NOT NULL,
-                            chunk_xxh64 TEXT NOT NULL,
-                            category TEXT,
-                            content_type TEXT,
-                            title TEXT,
-                            number TEXT,
-                            wording TEXT,
-                            creation_date TEXT,
-                            article_number INTEGER,
-                            article_title TEXT,
-                            article_synthesis TEXT,
-                            text TEXT,
-                            chunk_text TEXT,
-                            "embeddings_{model_name}" vector({embedding_size}),
-                            UNIQUE(chunk_id)
-                        )
-                    """)
-
-                elif table_name.lower() == "legi":
-                    cursor.execute(f"""
-                        CREATE TABLE LEGI (
-                            chunk_id TEXT PRIMARY KEY,
-                            doc_id TEXT NOT NULL,
-                            chunk_index INTEGER NOT NULL,
-                            chunk_xxh64 TEXT NOT NULL,
-                            nature TEXT,
-                            category TEXT,
-                            ministry TEXT,
-                            status TEXT,
-                            title TEXT,
-                            full_title TEXT,
-                            subtitles TEXT,
-                            number TEXT,
-                            start_date TEXT,
-                            end_date TEXT,
-                            nota TEXT,
-                            links JSONB,
-                            text TEXT,
-                            chunk_text TEXT,
-                            "embeddings_{model_name}" vector({embedding_size}),
-                            UNIQUE(chunk_id)
-                        )
-                    """)
-
-                elif table_name.lower() == "jade":
-                    cursor.execute(f"""
-                        CREATE TABLE JADE (
-                            chunk_id TEXT PRIMARY KEY,
-                            doc_id TEXT NOT NULL,
-                            chunk_index INTEGER NOT NULL,
-                            chunk_xxh64 TEXT NOT NULL,
-                            nature TEXT,
-                            solution TEXT,
-                            title TEXT,
-                            number TEXT,
-                            decision_date TEXT,
-                            jurisdiction TEXT,
-                            formation TEXT,
-                            text TEXT,
-                            chunk_text TEXT,
-                            "embeddings_{model_name}" vector({embedding_size}),
-                            UNIQUE(chunk_id)
-                        )
-                    """)
-
-                elif table_name.lower() == "data_gouv_datasets_catalog":
-                    cursor.execute(f"""
-                        CREATE TABLE DATA_GOUV_DATASETS_CATALOG (
-                            chunk_id TEXT PRIMARY KEY,
-                            doc_id TEXT,
-                            chunk_xxh64 TEXT NOT NULL,
-                            title TEXT,
-                            acronym TEXT,
-                            url TEXT,
-                            organization TEXT,
-                            organization_id TEXT,
-                            owner TEXT,
-                            owner_id TEXT,
-                            description TEXT,
-                            frequency TEXT,
-                            license TEXT,
-                            temporal_coverage_start TEXT,
-                            temporal_coverage_end TEXT,
-                            spatial_granularity TEXT,
-                            spatial_zones TEXT,
-                            featured BOOLEAN,
-                            created_at TEXT,
-                            last_modified TEXT,
-                            tags TEXT,
-                            archived TEXT,
-                            resources_count INTEGER,
-                            main_resources_count INTEGER,
-                            resources_formats TEXT,
-                            harvest_backend TEXT,
-                            harvest_domain TEXT,
-                            harvest_created_at TEXT,
-                            harvest_modified_at TEXT,
-                            harvest_remote_url TEXT,
-                            quality_score REAL,
-                            metric_discussions INTEGER,
-                            metric_reuses INTEGER,
-                            metric_reuses_by_months TEXT,
-                            metric_followers INTEGER,
-                            metric_followers_by_months TEXT,
-                            metric_views INTEGER,
-                            metric_resources_downloads REAL,
-                            chunk_text TEXT,
-                            "embeddings_{model_name}" vector({embedding_size}),
-                            UNIQUE(chunk_id)
-                        )
-                    """)
-
-                elif table_name.lower() == "table_mapping":
-                    cursor.execute("""
-                        CREATE TABLE TABLE_MAPPING (
-                            table_name VARCHAR(63) PRIMARY KEY,
-                            full_table_name VARCHAR NOT NULL
-                        )
-                    """)
-
-                # Create HNSW index for vector similarity search
-                try:
-                    if table_name.lower() not in CONFIG_TABLES:
-                        cursor.execute(f"""
-                            CREATE INDEX ON {table_name.upper()} USING hnsw ("embeddings_{model_name}" vector_cosine_ops)
-                            WITH (m = 16, ef_construction = 128);
-                        """)
-                        logger.debug(f"HNSW index created on {table_name.upper()}")
-                except Exception as e:
-                    logger.error(
-                        f"Error creating HNSW index on {table_name.upper()} table: {e}"
+            if table_name.lower() == "legi":
+                cursor.execute(f"""
+                    CREATE TABLE LEGI (
+                        chunk_id TEXT PRIMARY KEY,
+                        doc_id TEXT NOT NULL,
+                        chunk_index INTEGER NOT NULL,
+                        chunk_xxh64 TEXT NOT NULL,
+                        nature TEXT,
+                        category TEXT,
+                        ministry TEXT,
+                        status TEXT,
+                        title TEXT,
+                        full_title TEXT,
+                        subtitles TEXT,
+                        number TEXT,
+                        start_date TEXT,
+                        end_date TEXT,
+                        nota TEXT,
+                        links JSONB,
+                        text TEXT,
+                        chunk_text TEXT,
+                        "embeddings_{model_name}" vector({embedding_size}),
+                        UNIQUE(chunk_id)
                     )
-                    raise e
-
-                # Create index on doc_id for faster GROUP BY and WHERE operations
-                try:
-                    if table_name.lower() not in CONFIG_TABLES:
-                        cursor.execute(f"""
-                            CREATE INDEX idx_{table_name.lower()}_doc_id 
-                            ON {table_name.upper()}(doc_id);
-                        """)
-                        logger.debug(
-                            f"B-tree index on doc_id created for {table_name.upper()}"
-                        )
-                except Exception as e:
-                    logger.error(
-                        f"Error creating doc_id index on {table_name.upper()} table: {e}"
+                """)
+            elif table_name.lower() == "jade":
+                cursor.execute(f"""
+                    CREATE TABLE JADE (
+                        chunk_id TEXT PRIMARY KEY,
+                        doc_id TEXT NOT NULL,
+                        chunk_index INTEGER NOT NULL,
+                        chunk_xxh64 TEXT NOT NULL,
+                        nature TEXT,
+                        solution TEXT,
+                        title TEXT,
+                        number TEXT,
+                        decision_date TEXT,
+                        jurisdiction TEXT,
+                        formation TEXT,
+                        text TEXT,
+                        chunk_text TEXT,
+                        "embeddings_{model_name}" vector({embedding_size}),
+                        UNIQUE(chunk_id)
                     )
-                    raise e
+                """)
+            elif table_name.lower() == "bofip":
+                cursor.execute(f"""
+                    CREATE TABLE BOFIP (
+                        chunk_id TEXT PRIMARY KEY,
+                        doc_id TEXT NOT NULL,
+                        chunk_index INTEGER NOT NULL,
+                        chunk_xxh64 TEXT NOT NULL,
+                        title TEXT,
+                        contenu_id TEXT,
+                        contenu_type TEXT,
+                        document_number TEXT,
+                        bofip_url TEXT,
+                        publication_date TEXT,
+                        subjects TEXT[],
+                        category_path TEXT,
+                        links JSONB,
+                        text TEXT,
+                        chunk_text TEXT,
+                        "embeddings_{model_name}" vector({embedding_size}),
+                        UNIQUE(chunk_id)
+                    )
+                """)
+            elif table_name.lower() == "table_mapping":
+                cursor.execute("""
+                    CREATE TABLE TABLE_MAPPING (
+                        table_name VARCHAR(63) PRIMARY KEY,
+                        full_table_name VARCHAR NOT NULL
+                    )
+                """)
 
-                conn.commit()
-                logger.info(
-                    f"Table '{table_name.upper()}' created successfully in database {POSTGRES_DB} with indexes"
+            try:
+                if table_name.lower() not in config_tables:
+                    cursor.execute(f"""
+                        CREATE INDEX ON {table_name.upper()} USING hnsw ("embeddings_{model_name}" vector_cosine_ops)
+                        WITH (m = 16, ef_construction = 128);
+                    """)
+                    logger.debug(f"HNSW index created on {table_name.upper()}")
+            except Exception as e:
+                logger.error(
+                    f"Error creating HNSW index on {table_name.upper()} table: {e}"
                 )
+                raise e
 
-                # Mapping table entry
-                update_mapping_table(
-                    table_name=table_name[:63], full_table_name=table_name
+            try:
+                if table_name.lower() not in config_tables:
+                    cursor.execute(f"""
+                        CREATE INDEX idx_{table_name.lower()}_doc_id
+                        ON {table_name.upper()}(doc_id);
+                    """)
+                    logger.debug(
+                        f"B-tree index on doc_id created for {table_name.upper()}"
+                    )
+            except Exception as e:
+                logger.error(
+                    f"Error creating doc_id index on {table_name.upper()} table: {e}"
                 )
+                raise e
+
+            conn.commit()
+            logger.info(
+                f"Table '{table_name.upper()}' created successfully in database {POSTGRES_DB} with indexes"
+            )
+
+            update_mapping_table(
+                table_name=table_name[:63], full_table_name=table_name
+            )
 
     except Exception as e:
         logger.error(f"Error creating tables in PostgreSQL: {e}")
@@ -1273,11 +1072,11 @@ def insert_data(data: list, table_name: str, model=EMBEDDING_MODEL):
     Inserts a list of data rows into the specified PostgreSQL table, handling upserts and duplicate avoidance.
 
     Depending on the table name, constructs the appropriate INSERT ... ON CONFLICT SQL statement and executes it for all provided data rows.
-    For tables other than "directories", existing rows with the same 'doc_id' are deleted before insertion to avoid duplicates and outdated data.
+    Existing rows with the same 'doc_id' are deleted before insertion to avoid duplicates and outdated data.
 
     Args:
         data (list): A list of tuples, each representing a row to insert into the database.
-        table_name (str): The name of the target table. Supported values are "directories", "cnil", "constit", and "legi".
+        table_name (str): The name of the target table. Supported values are "legi", "jade", and "bofip".
 
     Raises:
         Logs errors if any exception occurs during database operations.
@@ -1288,156 +1087,77 @@ def insert_data(data: list, table_name: str, model=EMBEDDING_MODEL):
         - Performs upsert (insert or update on conflict) based on the primary key 'chunk_id'.
         - Logs an error and returns if an unknown table name is provided.
     """
+    if not data:
+        return
+
     with get_connection() as conn:
         cursor = conn.cursor()
+        started_at = time.perf_counter()
 
         model_name = format_model_name(model)
+        table_lower = table_name.lower()
+        if table_lower not in {"legi", "jade", "bofip"}:
+            logger.error(
+                "Unsupported table in tax-only mode: %s (expected one of: legi, jade, bofip)",
+                table_name,
+            )
+            return
 
-        if table_name.upper() in [
-            "LEGI",
-            "CNIL",
-            "CONSTIT",
-            "DOLE",
-            "JADE",
-            "BOFIP",
-        ]:  # Only for data having a stable doc_id (DILA cid or BOFiP contenu_id)
-            # Delete the existing data for the same doc_id in order to avoid duplicates and outdated data
-            source_doc_id = data[0][
-                1
-            ]  # Assuming doc_id is the second element in the tuple
-            delete_query = f"DELETE FROM {table_name.upper()} WHERE doc_id = %s"
-            cursor.execute(delete_query, (source_doc_id,))
+        source_doc_ids = sorted({row[1] for row in data if len(row) > 1 and row[1]})
+        if source_doc_ids:
+            delete_query = f"DELETE FROM {table_name.upper()} WHERE doc_id = ANY(%s)"
+            cursor.execute(delete_query, (source_doc_ids,))
 
-        if table_name.lower().endswith("directory"):
-            insert_query = f"""
-                INSERT INTO {table_name.upper()} (chunk_id, doc_id, chunk_xxh64, types, name, mission_description, addresses, phone_numbers, mails, urls, social_medias, mobile_applications, opening_hours, contact_forms, additional_information, modification_date, siret, siren, people_in_charge, organizational_chart, hierarchy, directory_url, chunk_text, "embeddings_{model_name}")
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        def _execute_fast_insert(
+            target_table: str,
+            columns: list[str],
+            update_columns: list[str],
+            rows: list,
+        ):
+            column_list = ", ".join(columns)
+            update_clause = ", ".join(
+                [f"{col} = EXCLUDED.{col}" for col in update_columns]
+            )
+            query = f"""
+                INSERT INTO {target_table} ({column_list})
+                VALUES %s
                 ON CONFLICT (chunk_id) DO UPDATE SET
-                doc_id = EXCLUDED.doc_id,
-                chunk_xxh64 = EXCLUDED.chunk_xxh64,
-                types = EXCLUDED.types,
-                name = EXCLUDED.name,
-                mission_description = EXCLUDED.mission_description,
-                addresses = EXCLUDED.addresses,
-                phone_numbers = EXCLUDED.phone_numbers,
-                mails = EXCLUDED.mails,
-                urls = EXCLUDED.urls,
-                social_medias = EXCLUDED.social_medias,
-                mobile_applications = EXCLUDED.mobile_applications,
-                opening_hours = EXCLUDED.opening_hours,
-                contact_forms = EXCLUDED.contact_forms,
-                additional_information = EXCLUDED.additional_information,
-                modification_date = EXCLUDED.modification_date,
-                siret = EXCLUDED.siret,
-                siren = EXCLUDED.siren,
-                people_in_charge = EXCLUDED.people_in_charge,
-                organizational_chart = EXCLUDED.organizational_chart,
-                hierarchy = EXCLUDED.hierarchy,
-                directory_url = EXCLUDED.directory_url,
-                chunk_text = EXCLUDED.chunk_text,
-                "embeddings_{model_name}" = EXCLUDED."embeddings_{model_name}";
-                """
+                {update_clause};
+            """
+            execute_values(cursor, query, rows, page_size=FAST_DB_INSERT_PAGE_SIZE)
 
-        elif table_name.lower() == "travail_emploi":
-            insert_query = f"""
-                INSERT INTO TRAVAIL_EMPLOI (chunk_id, doc_id, chunk_index, chunk_xxh64, title, surtitle, source, introduction, date, url, context, text, chunk_text, "embeddings_{model_name}")
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (chunk_id) DO UPDATE SET
-                doc_id = EXCLUDED.doc_id,
-                chunk_index = EXCLUDED.chunk_index,
-                chunk_xxh64 = EXCLUDED.chunk_xxh64,
-                title = EXCLUDED.title,
-                surtitle = EXCLUDED.surtitle,
-                source = EXCLUDED.source,
-                introduction = EXCLUDED.introduction,
-                date = EXCLUDED.date,
-                url = EXCLUDED.url,
-                context = EXCLUDED.context,
-                text = EXCLUDED.text,
-                chunk_text = EXCLUDED.chunk_text,
-                "embeddings_{model_name}" = EXCLUDED."embeddings_{model_name}";
-            """
-        elif table_name.lower() == "service_public":
-            insert_query = f"""
-                INSERT INTO SERVICE_PUBLIC (chunk_id, doc_id, chunk_index, chunk_xxh64, audience, theme, title, surtitle, source, introduction, url, related_questions, web_services, context, text, chunk_text, "embeddings_{model_name}")
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (chunk_id) DO UPDATE SET
-                doc_id = EXCLUDED.doc_id,
-                chunk_index = EXCLUDED.chunk_index,
-                chunk_xxh64 = EXCLUDED.chunk_xxh64,
-                audience = EXCLUDED.audience,
-                theme = EXCLUDED.theme,
-                title = EXCLUDED.title,
-                surtitle = EXCLUDED.surtitle,
-                source = EXCLUDED.source,
-                introduction = EXCLUDED.introduction,
-                url = EXCLUDED.url,
-                related_questions = EXCLUDED.related_questions,
-                web_services = EXCLUDED.web_services,
-                context = EXCLUDED.context,
-                text = EXCLUDED.text,
-                chunk_text = EXCLUDED.chunk_text,
-                "embeddings_{model_name}" = EXCLUDED."embeddings_{model_name}";
-            """
-        elif table_name.lower() == "cnil":
-            insert_query = f"""
-                INSERT INTO CNIL (chunk_id, doc_id, chunk_index, chunk_xxh64, nature, status, nature_delib, title, full_title, number, date, text, chunk_text, "embeddings_{model_name}")
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (chunk_id) DO UPDATE SET
-                doc_id = EXCLUDED.doc_id,
-                chunk_index = EXCLUDED.chunk_index,
-                chunk_xxh64 = EXCLUDED.chunk_xxh64,
-                nature = EXCLUDED.nature,
-                status = EXCLUDED.status,
-                nature_delib = EXCLUDED.nature_delib,
-                title = EXCLUDED.title,
-                full_title = EXCLUDED.full_title,
-                number = EXCLUDED.number,
-                date = EXCLUDED.date,
-                text = EXCLUDED.text,
-                chunk_text = EXCLUDED.chunk_text,
-                "embeddings_{model_name}" = EXCLUDED."embeddings_{model_name}";
-            """
-        elif table_name.lower() == "constit":
-            insert_query = f"""
-                INSERT INTO CONSTIT (chunk_id, doc_id, chunk_index, chunk_xxh64, nature, solution, title, number, decision_date, text, chunk_text, "embeddings_{model_name}")
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (chunk_id) DO UPDATE SET
-                doc_id = EXCLUDED.doc_id,
-                chunk_index = EXCLUDED.chunk_index,
-                chunk_xxh64 = EXCLUDED.chunk_xxh64,
-                nature = EXCLUDED.nature,
-                solution = EXCLUDED.solution,
-                title = EXCLUDED.title,
-                number = EXCLUDED.number,
-                decision_date = EXCLUDED.decision_date,
-                text = EXCLUDED.text,
-                chunk_text = EXCLUDED.chunk_text,
-                "embeddings_{model_name}" = EXCLUDED."embeddings_{model_name}";
-            """
-        elif table_name.lower() == "dole":
-            insert_query = f"""
-                INSERT INTO DOLE (chunk_id, doc_id, chunk_index, chunk_xxh64, category, content_type, title, number, wording, creation_date, article_number, article_title, article_synthesis, text, chunk_text, "embeddings_{model_name}")
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (chunk_id) DO UPDATE SET
-                doc_id = EXCLUDED.doc_id,
-                chunk_index = EXCLUDED.chunk_index,
-                chunk_xxh64 = EXCLUDED.chunk_xxh64,
-                category = EXCLUDED.category,
-                content_type = EXCLUDED.content_type,
-                title = EXCLUDED.title,
-                number = EXCLUDED.number,
-                wording = EXCLUDED.wording,
-                creation_date = EXCLUDED.creation_date,
-                article_number = EXCLUDED.article_number,
-                article_title = EXCLUDED.article_title,
-                article_synthesis = EXCLUDED.article_synthesis,
-                text = EXCLUDED.text,
-                chunk_text = EXCLUDED.chunk_text,
-                "embeddings_{model_name}" = EXCLUDED."embeddings_{model_name}";
-            """
+        fast_insert_done = False
+        if ENABLE_FAST_DB_INSERT and table_lower == "legi":
+            emb_col = f'"embeddings_{model_name}"'
+            columns = [
+                "chunk_id", "doc_id", "chunk_index", "chunk_xxh64", "nature", "category", "ministry",
+                "status", "title", "full_title", "subtitles", "number", "start_date", "end_date", "nota",
+                "links", "text", "chunk_text", emb_col,
+            ]
+            update_columns = [c for c in columns if c != "chunk_id"]
+            _execute_fast_insert("LEGI", columns, update_columns, data)
+            fast_insert_done = True
+        elif ENABLE_FAST_DB_INSERT and table_lower == "jade":
+            emb_col = f'"embeddings_{model_name}"'
+            columns = [
+                "chunk_id", "doc_id", "chunk_index", "chunk_xxh64", "nature", "solution", "title", "number",
+                "decision_date", "jurisdiction", "formation", "text", "chunk_text", emb_col,
+            ]
+            update_columns = [c for c in columns if c != "chunk_id"]
+            _execute_fast_insert("JADE", columns, update_columns, data)
+            fast_insert_done = True
+        elif ENABLE_FAST_DB_INSERT and table_lower == "bofip":
+            emb_col = f'"embeddings_{model_name}"'
+            columns = [
+                "chunk_id", "doc_id", "chunk_index", "chunk_xxh64", "title", "contenu_id", "contenu_type",
+                "document_number", "bofip_url", "publication_date", "subjects", "category_path", "links", "text",
+                "chunk_text", emb_col,
+            ]
+            update_columns = [c for c in columns if c != "chunk_id"]
+            _execute_fast_insert("BOFIP", columns, update_columns, data)
+            fast_insert_done = True
 
-        elif table_name.lower() == "legi":
+        if table_lower == "legi":
             insert_query = f"""
                 INSERT INTO LEGI (chunk_id, doc_id, chunk_index, chunk_xxh64, nature, category, ministry, status, title, full_title, subtitles, number, start_date, end_date, nota, links, text, chunk_text, "embeddings_{model_name}")
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -1461,7 +1181,7 @@ def insert_data(data: list, table_name: str, model=EMBEDDING_MODEL):
                 chunk_text = EXCLUDED.chunk_text,
                 "embeddings_{model_name}" = EXCLUDED."embeddings_{model_name}";
             """
-        elif table_name.lower() == "jade":
+        elif table_lower == "jade":
             insert_query = f"""
                 INSERT INTO JADE (chunk_id, doc_id, chunk_index, chunk_xxh64, nature, solution, title, number, decision_date, jurisdiction, formation, text, chunk_text, "embeddings_{model_name}")
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -1480,7 +1200,7 @@ def insert_data(data: list, table_name: str, model=EMBEDDING_MODEL):
                 chunk_text = EXCLUDED.chunk_text,
                 "embeddings_{model_name}" = EXCLUDED."embeddings_{model_name}";
             """
-        elif table_name.lower() == "bofip":
+        else:
             insert_query = f"""
                 INSERT INTO BOFIP (chunk_id, doc_id, chunk_index, chunk_xxh64, title, contenu_id, contenu_type, document_number, bofip_url, publication_date, subjects, category_path, links, text, chunk_text, "embeddings_{model_name}")
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -1501,58 +1221,19 @@ def insert_data(data: list, table_name: str, model=EMBEDDING_MODEL):
                 chunk_text = EXCLUDED.chunk_text,
                 "embeddings_{model_name}" = EXCLUDED."embeddings_{model_name}";
             """
-        elif table_name.lower() == "data_gouv_datasets_catalog":
-            insert_query = f"""
-                INSERT INTO DATA_GOUV_DATASETS_CATALOG (chunk_id, doc_id, chunk_xxh64, title, acronym, url, organization, organization_id, owner, owner_id, description, frequency, license, temporal_coverage_start, temporal_coverage_end, spatial_granularity, spatial_zones, featured, created_at, last_modified, tags, archived, resources_count, main_resources_count, resources_formats, harvest_backend, harvest_domain, harvest_created_at, harvest_modified_at, harvest_remote_url, quality_score, metric_discussions, metric_reuses, metric_reuses_by_months, metric_followers, metric_followers_by_months, metric_views, metric_resources_downloads, chunk_text, "embeddings_{model_name}")
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (chunk_id) DO UPDATE SET
-                doc_id = EXCLUDED.doc_id,
-                chunk_xxh64 = EXCLUDED.chunk_xxh64,
-                title = EXCLUDED.title,
-                acronym = EXCLUDED.acronym,
-                url = EXCLUDED.url,
-                organization = EXCLUDED.organization,
-                organization_id = EXCLUDED.organization_id,
-                owner = EXCLUDED.owner,
-                owner_id = EXCLUDED.owner_id,
-                description = EXCLUDED.description,
-                frequency = EXCLUDED.frequency,
-                license = EXCLUDED.license,
-                temporal_coverage_start = EXCLUDED.temporal_coverage_start,
-                temporal_coverage_end = EXCLUDED.temporal_coverage_end,
-                spatial_granularity = EXCLUDED.spatial_granularity,
-                spatial_zones = EXCLUDED.spatial_zones,
-                featured = EXCLUDED.featured,
-                created_at = EXCLUDED.created_at,
-                last_modified = EXCLUDED.last_modified,
-                tags = EXCLUDED.tags,
-                archived = EXCLUDED.archived,
-                resources_count = EXCLUDED.resources_count,
-                main_resources_count = EXCLUDED.main_resources_count,
-                resources_formats = EXCLUDED.resources_formats,
-                harvest_backend = EXCLUDED.harvest_backend,
-                harvest_domain = EXCLUDED.harvest_domain,
-                harvest_created_at = EXCLUDED.harvest_created_at,
-                harvest_modified_at = EXCLUDED.harvest_modified_at,
-                harvest_remote_url = EXCLUDED.harvest_remote_url,
-                quality_score = EXCLUDED.quality_score,
-                metric_discussions = EXCLUDED.metric_discussions,
-                metric_reuses = EXCLUDED.metric_reuses,
-                metric_reuses_by_months = EXCLUDED.metric_reuses_by_months,
-                metric_followers = EXCLUDED.metric_followers,
-                metric_followers_by_months = EXCLUDED.metric_followers_by_months,
-                metric_views = EXCLUDED.metric_views,
-                metric_resources_downloads = EXCLUDED.metric_resources_downloads,
-                chunk_text = EXCLUDED.chunk_text,
-                "embeddings_{model_name}" = EXCLUDED."embeddings_{model_name}";
-            """
-        else:
-            logger.error(f"Unknown table name: {table_name}")
-            return
+
         try:
-            cursor.executemany(insert_query, data)
+            if not fast_insert_done:
+                cursor.executemany(insert_query, data)
             conn.commit()
-            logger.debug("Data inserted into PostgreSQL database")
+            elapsed = time.perf_counter() - started_at
+            logger.info(
+                "DB insert stage completed: table=%s rows=%s mode=%s commit_sec=%.3f",
+                table_name.upper(),
+                len(data),
+                "execute_values" if fast_insert_done else "executemany",
+                elapsed,
+            )
         except Exception as e:
             logger.error(
                 f"Error inserting data into PostgreSQL: {e}\n{str(data)[:200]}..."

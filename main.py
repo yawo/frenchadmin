@@ -25,9 +25,8 @@ Options:
     --delete-existing       Delete existing tables before creating new ones
     --all                   Select all data sources from the data configuration file
     --model=<model_name>    Embedding model name [default: louisbrulenaudet/lemone-embed-pro]. It is mandatory to specify the same model for all commands.
-    --source=<source>       Source to process (service_public, travail_emploi, legi, cnil,
-                            state_administrations_directory, local_administrations_directory, constit, dole, jade)
-    --table=<name>          Table name to export or split (legi, service_public, etc.)
+    --source=<source>       Source to process (legi, jade, bofip)
+    --table=<name>          Table name to export or split (legi, jade, bofip)
     --folder=<path>         Folder containing unprocessed data
     --input=<path>          Input path of the dataset to upload
     --dataset-name=<name>   Name of the dataset to upload to Hugging Face
@@ -41,14 +40,14 @@ Options:
 Examples:
     main.py create_tables --model louisbrulenaudet/lemone-embed-pro --delete-existing
     main.py download_files --all
-    main.py download_and_process_files --source service_public --model louisbrulenaudet/lemone-embed-pro --debug
+    main.py download_and_process_files --source legi --model louisbrulenaudet/lemone-embed-pro --debug
     main.py download_and_process_files --all --model louisbrulenaudet/lemone-embed-pro
-    main.py process_files --source service_public --model louisbrulenaudet/lemone-embed-pro
+    main.py process_files --source jade --model louisbrulenaudet/lemone-embed-pro
     main.py process_files --all --folder data/unprocessed --model louisbrulenaudet/lemone-embed-pro
     main.py split_table --table legi
     main.py export_table --table legi --split
     main.py export_table --table all --output data/parquet
-    main.py upload_dataset --input data/parquet/service_public.parquet --dataset-name service-public --repository AgentPublic --private
+    main.py upload_dataset --input data/parquet/bofip.parquet --dataset-name bofip --repository AgentPublic --private
     main.py upload_dataset --all --repository AgentPublic
 """
 
@@ -214,7 +213,7 @@ def main():
                     else os.path.join(
                         parquet_files_folder,
                         f"{dataset_name.lower().replace('-', '_')}",
-                    )  # Default folder path for the dataset (e.g., ./data/parquet/service_public)
+                    )  # Default folder path for the dataset (e.g., ./data/parquet/bofip)
                 )
                 repository = (
                     args["--repository"] if args["--repository"] else "AgentPublic"

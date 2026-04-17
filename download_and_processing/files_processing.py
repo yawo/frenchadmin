@@ -1,9 +1,13 @@
 import gc
 import json
 import os
+import subprocess
 import sys
 import tarfile
+import time
 import xml.etree.ElementTree as ET
+from concurrent.futures import ProcessPoolExecutor
+from contextlib import nullcontext
 from datetime import datetime
 
 import pandas as pd
@@ -11,20 +15,29 @@ import xxhash
 from bs4 import BeautifulSoup
 from openai import PermissionDeniedError
 
-from config import BASE_PATH, EMBEDDING_MODEL, SOURCE_MAP, config_file_path, get_logger
+from config import (
+    BASE_PATH,
+    BATCH_SIZE_DOCS,
+    EMBEDDING_BATCH_MAX_SIZE,
+    EMBEDDING_RETRY_ATTEMPTS,
+    EMBEDDING_MODEL,
+    ENABLE_BATCH_EMBEDDING,
+    ENABLE_PARALLEL_PROCESSING,
+    MAX_WORKERS,
+    SOURCE_MAP,
+    config_file_path,
+    get_logger,
+)
 from database import insert_data, refresh_table, remove_data, upsert_bofip_node, upsert_jade_node, upsert_legi_node
 from utils import (
     CheckpointManager,
-    CorpusHandler,
-    _dole_cut_exp_memo,
-    _dole_cut_file_content,
     _make_schedule,
+    embed_texts_with_retry,
     format_subtitles,
     generate_embeddings_with_retry,
     load_config,
     make_chunks,
-    make_chunks_sheets,
-    make_directory_text,
+    PerfTelemetry,
     remove_file,
     remove_folder,
 )
@@ -33,6 +46,191 @@ logger = get_logger(__name__)
 
 # Setting a higher recursion limit for processing large files
 sys.setrecursionlimit(10000)
+
+_SMART_PROCESS_TARGETS = {"legi", "jade", "bofip"}
+_SMART_PROCESS_HAS_RUN = False
+
+
+def _telemetry_stage(telemetry: PerfTelemetry | None, stage_name: str):
+    if telemetry is None:
+        return nullcontext()
+    return telemetry.stage(stage_name)
+
+
+def _embed_texts(
+    chunk_texts: list[str],
+    model: str,
+    telemetry: PerfTelemetry | None = None,
+) -> list[list[float]]:
+    if not chunk_texts:
+        return []
+    if ENABLE_BATCH_EMBEDDING:
+        return embed_texts_with_retry(
+            texts=chunk_texts,
+            model=model,
+            attempts=EMBEDDING_RETRY_ATTEMPTS,
+            max_batch_size=EMBEDDING_BATCH_MAX_SIZE,
+            split_on_failure=True,
+            retry_observer=(telemetry.add_retry if telemetry else None),
+        )
+    embeddings = []
+    for chunk_text in chunk_texts:
+        embeddings.append(
+            generate_embeddings_with_retry(
+                data=chunk_text,
+                attempts=EMBEDDING_RETRY_ATTEMPTS,
+                model=model,
+            )[0]
+        )
+    return embeddings
+
+
+def _persist_dila_payload(payload: dict):
+    table_name = payload.get("table_name")
+    data_to_insert = payload.get("data_to_insert", [])
+    graph_type = payload.get("graph_type")
+    if not data_to_insert:
+        return
+    insert_data(data=data_to_insert, table_name=table_name)
+    if graph_type == "legi":
+        upsert_legi_node(data_to_insert)
+    elif graph_type == "jade":
+        upsert_jade_node(data_to_insert)
+
+
+def _prepare_dila_payload_from_file(file_path: str, model: str) -> dict | None:
+    worker_telemetry = PerfTelemetry(run_name="worker_dila", enabled=True)
+    file_name = os.path.basename(file_path)
+    with worker_telemetry.stage("parse"):
+        tree = ET.parse(file_path)
+        root = tree.getroot()
+    payload = _process_dila_xml_content(
+        root=root,
+        file_name=file_name,
+        model=model,
+        persist=False,
+        telemetry=worker_telemetry,
+    )
+    if payload is None:
+        return None
+    payload["file_name"] = file_name
+    payload["worker_stage_seconds"] = worker_telemetry.stage_seconds
+    return payload
+
+
+def _prepare_bofip_payload_from_paths(
+    xml_path: str,
+    html_path: str,
+    rel_xml_path: str,
+    model: str,
+) -> list:
+    worker_telemetry = PerfTelemetry(run_name="worker_bofip", enabled=True)
+    with worker_telemetry.stage("parse"):
+        with open(xml_path, "rb") as xf, open(html_path, "rb") as hf:
+            xml_content = xf.read()
+            html_content = hf.read()
+
+    data_to_insert = _process_bofip_document(
+        xml_content=xml_content,
+        html_content=html_content,
+        file_path=rel_xml_path,
+        model=model,
+        telemetry=worker_telemetry,
+    )
+
+    return {
+        "data_to_insert": data_to_insert,
+        "worker_stage_seconds": worker_telemetry.stage_seconds,
+    }
+
+
+def _merge_worker_stage_seconds(
+    telemetry: PerfTelemetry | None,
+    worker_stage_seconds: dict | None,
+):
+    if telemetry is None or not worker_stage_seconds:
+        return
+    for stage_name, seconds in worker_stage_seconds.items():
+        telemetry.add_stage_time(stage_name, float(seconds))
+
+
+def _extract_bofip_result_payload(result_obj) -> tuple[list, dict]:
+    if isinstance(result_obj, dict):
+        return result_obj.get("data_to_insert", []), result_obj.get("worker_stage_seconds", {})
+    return result_obj or [], {}
+
+
+def _extract_dila_result_payload(result_obj) -> tuple[dict | None, dict]:
+    if isinstance(result_obj, dict):
+        return result_obj, result_obj.get("worker_stage_seconds", {})
+    return result_obj, {}
+
+
+def _get_selected_folder(table_name: str) -> str:
+    """Return the selected-data folder for a table name."""
+    return os.path.join(BASE_PATH, "data", "selected", table_name.lower())
+
+
+def _directory_has_suffix(path: str, suffix: str) -> bool:
+    """Check if a directory contains at least one file ending with suffix."""
+    if not os.path.isdir(path):
+        return False
+    for _, _, files in os.walk(path):
+        if any(name.endswith(suffix) for name in files):
+            return True
+    return False
+
+
+def _has_bofip_selected_documents(selected_folder: str) -> bool:
+    """Check if selected BOFiP folder has at least one document.xml + data.html pair."""
+    if not os.path.isdir(selected_folder):
+        return False
+
+    for _, _, files in os.walk(selected_folder):
+        file_set = set(files)
+        if "document.xml" in file_set and "data.html" in file_set:
+            return True
+    return False
+
+
+def _run_smart_process_tax_if_needed(table_name: str):
+    """Run smart pre-processing once before handling LEGI/JADE/BOFiP sources."""
+    global _SMART_PROCESS_HAS_RUN
+
+    if table_name.lower() not in _SMART_PROCESS_TARGETS:
+        return
+    if _SMART_PROCESS_HAS_RUN:
+        return
+
+    script_path = os.path.join(BASE_PATH, "download_and_processing", "smart_process_tax.sh")
+    if not os.path.isfile(script_path):
+        raise FileNotFoundError(
+            f"Smart pre-processing script not found at {script_path}"
+        )
+
+    logger.info(
+        "Running smart pre-processing before LEGI/JADE/BOFiP content processing"
+    )
+    try:
+        result = subprocess.run(
+            ["bash", script_path],
+            cwd=BASE_PATH,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        if result.stdout:
+            logger.debug(result.stdout)
+        if result.stderr:
+            logger.debug(result.stderr)
+        logger.info("Smart pre-processing finished successfully")
+    except subprocess.CalledProcessError as e:
+        logger.error(
+            f"Smart pre-processing failed with return code {e.returncode}: {e.stderr}"
+        )
+        raise
+
+    _SMART_PROCESS_HAS_RUN = True
 #TODO 1: we need a second pass to get other links such as laws 
 # that modify the current code. 
 # We can use the "LIENS" tag in the XML files to get all the relationships 
@@ -43,578 +241,20 @@ sys.setrecursionlimit(10000)
 # TODO 2: After that we will also parse the content of the documents 
 # to infer references to other documents that are not explicitly mentioned in the "LIENS" tag, 
 # but that are present in the text.
-FISCAL_CODES = {
-            "LEGITEXT000006069577": "CGI",
-            "LEGITEXT000006069583": "LPF",
-            "LEGITEXT000044594668": "CIBS"
-        }
-       
-def is_fiscal_ruling(xml_root):
-    # 1. Target the SCT tag inside the SOMMAIRE
-    sct_tag = xml_root.find(".//SCT")
-    
-    if sct_tag is not None and sct_tag.text:
-        # The first two digits determine the legal domain
-        classification_code = sct_tag.text.split()[0] # Get '39-02-005'
-        
-        if classification_code.startswith("19"):
-            return True, classification_code
-            
-    return False
 
-def is_fiscal_code(category):
-    if category in FISCAL_CODES:
-        return True
-    
-    # # Backup: Search for the 'Champ Juridique'
-    # champ = xml_root.find(".//CHAMP_JURIDIQUE")
-    # if champ is not None and "Droit fiscal" in champ.text:
-    #     return True
-        
-    return False
 
-def _process_data_gouv_content(
-    df: pd.DataFrame,
-    table_name: str,
-    checkpoint: CheckpointManager,
-    last_processed_index: int,
+
+def _process_dila_xml_content(
+    root: ET.Element,
+    file_name: str,
     model: str,
+    persist: bool = True,
+    telemetry: PerfTelemetry | None = None,
 ):
-    """
-    Process data.gouv.fr content with checkpoint support for resume capability.
-
-    Args:
-        df (pd.DataFrame): DataFrame containing the data to process
-        table_name (str): Name of the database table to insert data into
-        checkpoint (CheckpointManager): Checkpoint manager for saving progress
-        last_processed_index (int): Index of the last processed row
-        model (str): Model name for embedding generation
-    """
-
-    df = df[
-        df["description"].str.len() >= 100
-    ]  # Filter out rows with short descriptions
-    df["chunk_text"] = (
-        df["title"].astype(str)
-        + "\n"
-        + df["organization"].astype(str)
-        + "\n"
-        + df["description"].astype(str)
-    )
-
-    total_rows = len(df)
-    logger.info(
-        f"Total rows to process: {total_rows}, "
-        f"Starting from index: {last_processed_index + 1}"
-    )
-
-    for idx, (_, row) in enumerate(df.iterrows()):
-        # Skip already processed rows
-        if idx <= last_processed_index:
-            continue
-
-        # Log progress every 100 rows
-        if idx > 0 and idx % 100 == 0:
-            logger.info(
-                f"Processing row {idx}/{total_rows} ({(idx / total_rows) * 100:.1f}%)"
-            )
-
-        # Replace nan values with None in the current row
-        row = row.where(pd.notna(row), None)
-        # Making chunks
-        chunk_text = make_chunks(
-            text=row["chunk_text"],
-            chunk_size=1000,
-            chunk_overlap=0,
-            length_function="len",
-        )[
-            0
-        ]  # Only keep the first chunks because a too long description is not interesting for this kind of dataset
-
-        chunk_xxh64 = xxhash.xxh64(chunk_text.encode("utf-8"), seed=2025).hexdigest()
-
-        embeddings = generate_embeddings_with_retry(
-            data=chunk_text, attempts=5, model=model
-        )[0]
-
-        doc_id = row.get("slug", None)
-
-        new_data = (
-            row.get("id"),  # Primary key (chunk_id)
-            doc_id,
-            chunk_xxh64,  # Hash of chunk_text
-            row.get("title", None),
-            row.get("acronym", None),
-            row.get("url", None),
-            row.get("organization", None),
-            row.get("organization_id", None),
-            row.get("owner", None),
-            row.get("owner_id", None),
-            row.get("description", None),
-            row.get("frequency", None),
-            row.get("license", None),
-            row.get("temporal_coverage.start", None),
-            row.get("temporal_coverage.end", None),
-            row.get("spatial.granularity", None),
-            row.get("spatial.zones", None),
-            row.get("featured", None),
-            row.get("created_at", None),
-            row.get("last_modified", None),
-            row.get("tags", None),  # Convert tags to JSON string
-            row.get("archived", None),
-            row.get("resources_count", None),
-            row.get("main_resources_count", None),
-            row.get("resources_formats", None),
-            row.get("harvest.backend", None),
-            row.get("harvest.domain", None),
-            row.get("harvest.created_at", None),
-            row.get("harvest.modified_at", None),
-            row.get("harvest.remote_url", None),
-            row.get("quality_score", None),
-            row.get("metric.discussions", None),
-            row.get("metric.reuses", None),
-            row.get("metric.reuses_by_months", None),
-            row.get("metric.followers", None),
-            row.get("metric.followers_by_months", None),
-            row.get("metric.views", None),
-            row.get("metric.resources_downloads", None),
-            chunk_text,  # The text chunk for embedding
-            embeddings,  # The embedding vector
-        )
-
-        try:
-            insert_data(data=[new_data], table_name=table_name)
-            # Save checkpoint after successful insertion
-            checkpoint.save(idx, metadata={"doc_id": doc_id, "table": table_name})
-        except Exception as e:
-            logger.error(f"Error inserting data for row {idx} (doc_id: {doc_id}): {e}")
-            logger.error(
-                "Progress saved. Restart the process to resume from this point."
-            )
-            raise e
-
-    # All rows processed successfully
-    checkpoint.remove()
-    logger.info(f"Successfully processed all {total_rows} rows")
-
-
-def process_data_gouv_files(table_name: str, model: str = EMBEDDING_MODEL):
-    """
-    Process data.gouv.fr files by generating embeddings and storing them in database.
-    The workflow depends on the file.
-
-    Implements a checkpoint system to resume processing from the last successfully
-    processed row in case of errors.
-
-    Args:
-        table_name (str): Name of the table to process
-        model (str): Model name for embedding generation. Defaults to EMBEDDING_MODEL
-
-    """
-    config = load_config(config_file_path=config_file_path)
-    data_sources = config.get(table_name.lower(), {})
-
-    for data_source, attributes in data_sources.items():
-        if attributes.get("type") == "data_gouv":
-            target_dir = os.path.join(BASE_PATH, attributes.get("download_folder", ""))
-
-            csv_path = f"{target_dir}/{data_source}.csv"
-
-            # Initialiser le checkpoint manager
-            checkpoint = CheckpointManager(csv_path)
-            last_processed_index = checkpoint.load()
-
-            df = pd.read_csv(csv_path, sep=";", encoding="utf-8")
-
-            if last_processed_index == -1:
-                # First run: use refresh_table for optimization
-                logger.info("First run detected, using refresh_table for optimization")
-                with refresh_table(table_name, model):
-                    _process_data_gouv_content(
-                        df=df,
-                        table_name=table_name,
-                        checkpoint=checkpoint,
-                        last_processed_index=last_processed_index,
-                        model=model,
-                    )
-            else:
-                # Resume: normal processing without refresh
-                logger.info(
-                    f"Resuming from checkpoint index {last_processed_index + 1}"
-                )
-                _process_data_gouv_content(
-                    df=df,
-                    table_name=table_name,
-                    checkpoint=checkpoint,
-                    last_processed_index=last_processed_index,
-                    model=model,
-                )
-
-        else:
-            logger.error(
-                f"Unknown target directory '{target_dir}' for processing data.gouv.fr files."
-            )
-            raise ValueError(
-                f"Unknown target directory '{target_dir}' for processing data.gouv.fr files."
-            )
-
-
-def _process_directories_content(
-    directory: list,
-    table_name: str,
-    checkpoint: CheckpointManager,
-    last_processed_index: int,
-    model: str,
-):
-    """
-    Process directory content with checkpoint support for resume capability.
-
-    Workflow:
-        1. Extracts and processes various fields such as addresses, phone numbers, types, SIRET/SIREN, URLs, emails,
-           opening hours, mobile applications, social networks, additional information, people in charge, and hierarchy.
-        2. Generates text chunks and embeddings for each directory entry.
-        3. Inserts the processed data, including embeddings, into a table in the database.
-    Args:
-        directory (list): List of directory entries to process
-        table_name (str): Name of the database table to insert data into
-        checkpoint (CheckpointManager): Checkpoint manager for saving progress
-        last_processed_index (int): Index of the last processed entry
-        model (str): Model name for embedding generation
-    """
-    total_entries = len(directory)
-    logger.info(f"Starting to process {total_entries} entries")
-
-    ## Processing data
-    for k, data in enumerate(directory):
-        # Skip already processed entries
-        if k <= last_processed_index:
-            continue
-
-        # Log progress every 100 entries
-        if k > 0 and k % 100 == 0:
-            logger.info(
-                f"Processing entry {k}/{total_entries} ({(k / total_entries) * 100:.1f}%)"
-            )
-
-        chunk_id = data.get("id", "")
-        name = data.get("nom", "")
-        directory_url = data.get("url_service_public", "")
-
-        # Addresses
-        addresses = []
-        try:
-            for adresse in data.get("adresse", [{}]):
-                # Metadata
-                addresses.append(
-                    {
-                        "adresse": f"{adresse.get('complement1', '')} {adresse.get('complement2', '')} {adresse.get('numero_voie', '')}".strip(),
-                        "code_postal": adresse.get("code_postal", ""),
-                        "commune": adresse.get("nom_commune", ""),
-                        "pays": adresse.get("pays", ""),
-                        "longitude": adresse.get("longitude", ""),
-                        "latitude": adresse.get("latitude", ""),
-                    }
-                )
-
-        except Exception:
-            pass
-
-        # Phone numbers
-        phone_numbers = []
-        try:
-            for telephone in data.get("telephone", [{}]):
-                if telephone.get("description", ""):
-                    phone_numbers.append(
-                        f"{telephone.get('valeur', '')}. {telephone.get('description', '')}"
-                    )
-                else:
-                    phone_numbers.append(f"{telephone.get('valeur', '')}")
-        except Exception:
-            pass
-
-        # File modification date
-        try:
-            date_str = data.get("date_modification", "")
-            if date_str:
-                modification_date_dt = datetime.strptime(date_str, "%d/%m/%Y %H:%M:%S")
-                modification_date = modification_date_dt.strftime("%Y-%m-%d")
-            else:
-                modification_date = ""
-        except ValueError:
-            modification_date = ""
-            logger.debug(f"Date format error for value: {date_str}")
-
-        # Types
-        types = ""
-        type_list = []
-        pivot_data = data.get("pivot", [])
-        type_organisme = data.get("type_organisme", "")
-
-        if pivot_data and type_organisme:
-            for pivot in pivot_data:
-                if isinstance(pivot, dict) and "type_service_local" in pivot:
-                    type_list.append(f"{pivot['type_service_local']}")
-            types = ", ".join(type_list)
-            types += f" ({type_organisme})"
-        elif pivot_data and not type_organisme:
-            for pivot in pivot_data:
-                if isinstance(pivot, dict) and "type_service_local" in pivot:
-                    type_list.append(f"{pivot['type_service_local']}")
-            types = ", ".join(type_list)
-        elif type_organisme and not pivot_data:
-            types += f"{type_organisme}"
-
-        # SIRET and SIREN
-        siret = data.get("siret", "")
-        siren = data.get("siren", "")
-
-        # URLs
-        urls = []
-        try:
-            for site in data.get("site_internet", [{}]):
-                if isinstance(site.get("valeur", ""), list):
-                    urls.extend(site.get("valeur", []))
-                else:
-                    urls.append(site.get("valeur", ""))
-        except Exception:
-            pass
-
-        # Contact forms
-        contact_forms = []
-        try:
-            for formulaire in data.get("formulaire_contact", []):
-                if isinstance(formulaire, list):
-                    contact_forms.extend(formulaire)
-                else:
-                    contact_forms.append(formulaire)
-        except Exception:
-            pass
-
-        # Emails
-        mails = []
-        try:
-            for mail in data.get("adresse_courriel", []):
-                if isinstance(mail, list):
-                    mails.extend(mail)
-                else:
-                    mails.append(mail)
-        except Exception:
-            pass
-
-        # Opening hours
-        opening_hours = _make_schedule(data.get("plage_ouverture", []))
-
-        # Mobile applications
-        mobile_applications = []
-        try:
-            for application in data.get("application_mobile", [{}]):
-                mobile_applications.append(
-                    f"{application.get('description', '')} ({application.get('custom_dico2', '')}) : {application.get('valeur', '')}"
-                )
-        except Exception:
-            pass
-
-        # Social medias
-        social_medias = []
-        try:
-            for reseau in data.get("reseau_social", [{}]):
-                if reseau.get("description", ""):
-                    social_medias.append(
-                        f"{reseau.get('custom_dico2', '')} ({reseau.get('description', '')}) : {reseau.get('valeur', '')}"
-                    )
-                else:
-                    social_medias.append(
-                        f"{reseau.get('custom_dico2', '')} : {reseau.get('valeur', '')}"
-                    )
-        except Exception:
-            pass
-
-        # Additional information and mission description
-        additional_information = data.get("information_complementaire", "")
-        mission_description = data.get("mission", "")
-
-        # People in charge
-        people_in_charge = data.get("affectation_personne", [{}])
-
-        # Organizational chart and hierarchy
-        organizational_chart = []
-        try:
-            for org in data.get("organigramme", []):
-                if org.get("libelle"):
-                    organizational_chart.append(
-                        f"{org.get('libelle', '')} : {org.get('valeur', '')}"
-                    )
-                else:
-                    organizational_chart.append(f"{org.get('valeur', '')}")
-        except Exception:
-            pass
-
-        hierarchy = data.get("hierarchie", [])
-
-        chunk_text = make_directory_text(
-            nom=name,
-            mission=mission_description,
-            responsables=people_in_charge,
-            adresses=addresses,
-        )
-
-        chunk_xxh64 = xxhash.xxh64(chunk_text.encode("utf-8"), seed=2025).hexdigest()
-
-        embeddings = generate_embeddings_with_retry(
-            data=chunk_text, attempts=5, model=model
-        )[0]
-
-        doc_id = (
-            chunk_id  # Using chunk_id as doc_id because each document is a single entry
-        )
-
-        ## Insert data into the database
-        new_data = (
-            chunk_id,
-            doc_id,
-            chunk_xxh64,  # Hash of chunk_text
-            types,
-            name,
-            mission_description,
-            json.dumps(addresses),  # Converts to string
-            phone_numbers,
-            mails,
-            urls,
-            social_medias,
-            mobile_applications,
-            opening_hours,
-            contact_forms,
-            additional_information,
-            modification_date,
-            siret,
-            siren,
-            json.dumps(people_in_charge),
-            organizational_chart,
-            json.dumps(hierarchy),
-            directory_url,
-            chunk_text,
-            embeddings,
-        )
-
-        try:
-            insert_data(
-                data=[new_data],
-                table_name=table_name,
-            )
-            # Save checkpoint after successful insertion
-            checkpoint.save(k, metadata={"doc_id": doc_id, "table": table_name})
-
-        except Exception as e:
-            logger.error(f"Error inserting data for entry {k} (doc_id: {doc_id}): {e}")
-            logger.error(
-                "Progress saved. Restart the process to resume from this point."
-            )
-            raise e
-
-    # All entries processed successfully
-    checkpoint.remove()
-    logger.info(f"Successfully processed all {total_entries} directory entries")
-
-
-def process_directories(table_name: str, model: str = EMBEDDING_MODEL):
-    """
-    Processes directory data from JSON files specified in a configuration file, extracts and transforms relevant fields,
-    generates embeddings for each directory, and inserts the processed data into a database.
-
-    Implements a checkpoint system to resume processing from the last successfully
-    processed directory entry in case of errors.
-
-    Args:
-        table_name (str): The name of the table to process.
-        model (str): The identifier for the embedding model to use. Defaults to EMBEDDING_MODEL.
-    Raises:
-        FileNotFoundError: If the configuration file or any specified directory JSON file is not found.
-        json.JSONDecodeError: If there is an error decoding JSON from the configuration or data files.
-        Exception: For any other unexpected errors during file loading or embedding generation.
-
-    Workflow:
-        1. Loads the configuration file to determine which directory JSON files to process.
-        2. Reads and aggregates directory data from the specified JSON files.
-        3. Process, embeds, and inserts each directory entry into the database.
-
-    Logging:
-        Logs errors and information throughout the process, including file loading issues, JSON decoding errors,
-        embedding generation retries, and the number of directories loaded.
-    """
-    config = load_config(config_file_path=config_file_path)
-    data_sources = config.get(table_name.lower(), {})
-
-    for data_source, attributes in data_sources.items():
-        if attributes.get("type") == "directory":
-            target_dir = os.path.join(BASE_PATH, attributes.get("download_folder", ""))
-
-            # Initialiser le checkpoint manager
-            json_path = f"{target_dir}/{data_source}.json"
-            checkpoint = CheckpointManager(json_path)
-            last_processed_index = checkpoint.load()
-
-            ### Loading directory
-            directory = []
-            try:
-                with open(json_path, encoding="utf-8") as json_file:
-                    json_data = json.load(json_file)
-                    if not directory:  # First file
-                        directory = json_data["service"]
-                    else:
-                        directory.extend(json_data["service"])
-                    logger.info(
-                        f"Loaded {len(directory)} lines of data from {target_dir}, "
-                        f"Starting from index: {last_processed_index + 1}"
-                    )
-            except FileNotFoundError:
-                logger.error(f"File not found: {json_path}.")
-                raise
-            except json.JSONDecodeError:
-                logger.error(f"Error decoding JSON from the file: {json_path}.")
-                raise
-            except Exception as e:
-                logger.error(f"Unexpected error while loading file {json_path}: {e}")
-                raise
-
-            if last_processed_index == -1:
-                # First run: use refresh_table for optimization
-                logger.info("First run detected, using refresh_table for optimization")
-                with refresh_table(table_name, model):
-                    _process_directories_content(
-                        directory=directory,
-                        table_name=table_name,
-                        checkpoint=checkpoint,
-                        last_processed_index=last_processed_index,
-                        model=model,
-                    )
-            else:
-                # Resume: normal processing without refresh
-                logger.info(
-                    f"Resuming from checkpoint index {last_processed_index + 1}"
-                )
-                _process_directories_content(
-                    directory=directory,
-                    table_name=table_name,
-                    checkpoint=checkpoint,
-                    last_processed_index=last_processed_index,
-                    model=model,
-                )
-
-        else:
-            logger.error(
-                f"Unknown data type for source '{data_source}' in processing directories."
-            )
-            raise ValueError(
-                f"Unknown data type for source '{data_source}' in processing directories."
-            )
-
-
-def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
     """Processes a single DILA XML file, prepares, and inserts its content into the database.
 
     This function acts as a dispatcher based on the filename prefix. It handles
-    different XML structures for various legal document types (`LEGIARTI`, `CNILTEXT`,
-    `CONSTEXT`, `JORFDOLE`).
+    different XML structures for tax legal document types (`LEGIARTI`, `JADETEXT`).
 
     For each document, it extracts metadata and textual content, splits the text
     into manageable chunks, generates a vector embedding for each chunk, and
@@ -636,16 +276,10 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
    
     if file_name.startswith("LEGIARTI") and file_name.endswith(".xml"):
         table_name = "legi"
-        TARGET_CODES = {
-            "LEGITEXT000006069577": "CGI",
-            "LEGITEXT000006069583": "LPF",
-            "LEGITEXT000044594668": "CIBS"
-        }
+        
         try:
             category = root.find(".//CONTEXTE//TEXTE").get("cid", None)
-            if not is_fiscal_code(root):            
-                # logger.info(f"Skipping file {file_name} with category {category} not in target codes.")
-                return  # Skip processing for this file
+            
             ministry = root.find(".//CONTEXTE//TEXTE").get("ministere", None)
             status = root.find(".//ETAT").text
             cid = root.find(".//ID").text  # doc_id
@@ -716,7 +350,10 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
             text_content = "\n".join(text_content)
 
             data_to_insert = []
-            chunks = make_chunks(text=text_content)
+            with _telemetry_stage(telemetry, "chunking"):
+                chunks = make_chunks(text=text_content)
+            chunk_rows = []
+            chunk_texts = []
             for k, text in enumerate(chunks):
                 try:
                     chunk_index =  k + 1 # Start chunk numbering from 1
@@ -734,226 +371,67 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
                         chunk_text.encode("utf-8"), seed=2025
                     ).hexdigest()
 
-                    embeddings = generate_embeddings_with_retry(
-                        data=chunk_text, attempts=5, model=model
-                    )[0]
                     chunk_id = f"{cid}_{chunk_index}"  # Unique ID for the chunk
-
-                    new_data = (
-                        chunk_id,  # Primary key
-                        cid,  # Original document ID
-                        chunk_index,  # Chunk number
-                        chunk_xxh64,  # Hash of chunk_text
-                        nature,
-                        category,
-                        ministry,
-                        status,
-                        title,
-                        full_title,
-                        subtitles,
-                        number,
-                        start_date,
-                        end_date,
-                        nota,
-                        json.dumps(links),  # Convert links to JSON string
-                        text,  # Original text
-                        chunk_text,  # Augmented text for better search
-                        embeddings,  # Embedding of chunk_text
+                    chunk_rows.append(
+                        (
+                            chunk_id,
+                            cid,
+                            chunk_index,
+                            chunk_xxh64,
+                            nature,
+                            category,
+                            ministry,
+                            status,
+                            title,
+                            full_title,
+                            subtitles,
+                            number,
+                            start_date,
+                            end_date,
+                            nota,
+                            json.dumps(links),
+                            text,
+                            chunk_text,
+                        )
                     )
-                    data_to_insert.append(new_data)
+                    chunk_texts.append(chunk_text)
                 except PermissionDeniedError as e:
                     logger.error(
                         f"PermissionDeniedError (API key issue) for file {file_name}: {e}"
                     )
                     raise e
 
+            with _telemetry_stage(telemetry, "embedding"):
+                embeddings_list = _embed_texts(chunk_texts=chunk_texts, model=model, telemetry=telemetry)
+            for row_data, embeddings in zip(chunk_rows, embeddings_list):
+                data_to_insert.append((*row_data, embeddings))
+
+            if telemetry is not None:
+                telemetry.add_counter("docs_processed", 1)
+                telemetry.add_counter("chunks_produced", len(data_to_insert))
+
             # Inserting all chunks at once
             if data_to_insert:
-                insert_data(data=data_to_insert, table_name=table_name)
-                upsert_legi_node(data_to_insert)
+                if persist:
+                    with _telemetry_stage(telemetry, "postgres_insert"):
+                        insert_data(data=data_to_insert, table_name=table_name)
+                    with _telemetry_stage(telemetry, "graph_upsert"):
+                        upsert_legi_node(data_to_insert)
+                    if telemetry is not None:
+                        telemetry.add_counter("rows_written", len(data_to_insert))
+                return {
+                    "table_name": table_name,
+                    "graph_type": "legi",
+                    "data_to_insert": data_to_insert,
+                }
 
         except Exception as e:
             logger.error(f"Error processing file {file_name}: {e}")
             raise e
 
-    elif file_name.startswith("CNILTEXT") and file_name.endswith(".xml"):
-        # logger.info(f"Not processing CNIL file: {file_name}")
-        return
-        table_name = "cnil"
-        try:
-            status = root.find(".//ETAT_JURIDIQUE").text
-
-            cid = root.find(".//ID").text
-            nature = root.find(".//NATURE").text
-            nature_delib = root.find(".//NATURE_DELIB").text
-            title = root.find(".//TITRE").text
-            full_title = root.find(".//TITREFULL").text
-            number = root.find(".//NUMERO").text
-            date = datetime.strptime(
-                root.find(".//DATE_TEXTE").text, "%Y-%m-%d"
-            ).strftime("%Y-%m-%d")
-
-            contenu = root.find(".//BLOC_TEXTUEL/CONTENU")
-            text_content = []
-
-            if contenu is not None:
-                # Extract all text
-                content = ET.tostring(contenu, encoding="unicode", method="xml")
-                content = "".join(ET.fromstring(content).itertext())
-                # Post-process the text to improve readability
-                lines = content.splitlines()  # Split the content into lines
-                cleaned_lines = [
-                    line for line in lines if line
-                ]  # Remove empty lines and extra spaces
-
-                content = "\n".join(
-                    cleaned_lines
-                )  # Rejoin the cleaned lines with a newline
-                text_content.append(content)
-            text_content = "\n".join(text_content)
-
-            chunks = make_chunks(
-                text=text_content,
-                chunk_size=1500,
-                chunk_overlap=0,
-                length_function="len",
-            )
-            data_to_insert = []
-
-            for k, text in enumerate(chunks):
-                try:
-                    chunk_index = k + 1  # Start chunk numbering from 1
-                    chunk_text = f"{title}\n{text}"
-
-                    chunk_xxh64 = xxhash.xxh64(
-                        chunk_text.encode("utf-8"), seed=2025
-                    ).hexdigest()
-
-                    embeddings = generate_embeddings_with_retry(
-                        data=chunk_text, attempts=5, model=model
-                    )[0]
-
-                    chunk_id = f"{cid}_{chunk_index}"  # Unique ID for each chunk
-
-                    new_data = (
-                        chunk_id,  # Primary key
-                        cid,  # Original document ID
-                        chunk_index,  # Chunk number
-                        chunk_xxh64,  # Hash of chunk_text
-                        nature,
-                        status,
-                        nature_delib,
-                        title,
-                        full_title,
-                        number,
-                        date,
-                        text,  # Original text
-                        chunk_text,
-                        embeddings,
-                    )
-                    data_to_insert.append(new_data)
-                except PermissionDeniedError as e:
-                    logger.error(
-                        f"PermissionDeniedError (API key issue) for chunk {chunk_index} of file {file_name}: {e}"
-                    )
-                    raise
-
-            # Inserting all chunks at once
-            if data_to_insert:
-                insert_data(data=data_to_insert, table_name=table_name)
-
-        except Exception as e:
-            logger.error(f"Error processing file {file_name}: {e}")
-            raise e
-
-    elif file_name.startswith("CONSTEXT") and file_name.endswith(".xml"):
-        # logger.info(f"Not processing Constit file: {file_name}")
-        return
-        table_name = "constit"
-        try:
-            cid = root.find(".//ID").text
-            nature = root.find(".//NATURE").text
-            title = root.find(".//TITRE").text
-            number = root.find(".//NUMERO").text
-            solution = root.find(".//SOLUTION").text
-            decision_date = datetime.strptime(
-                root.find(".//DATE_DEC").text, "%Y-%m-%d"
-            ).strftime("%Y-%m-%d")
-            contenu = root.find(".//BLOC_TEXTUEL//CONTENU")
-
-            text_content = []
-
-            if contenu is not None:
-                # Extract all text
-                content = ET.tostring(contenu, encoding="unicode", method="xml")
-                content = "".join(ET.fromstring(content).itertext())
-                # Post-process the content to improve readability
-                lines = content.splitlines()  # Split the content into lines
-                cleaned_lines = [
-                    line for line in lines if line
-                ]  # Remove empty lines and extra spaces
-                content = "\n".join(
-                    cleaned_lines
-                )  # Rejoin the cleaned lines with a newline
-                text_content.append(content)
-            text_content = "\n".join(text_content)
-
-            chunks = make_chunks(
-                text=text_content,
-                chunk_size=1500,
-                chunk_overlap=0,
-                length_function="len",
-            )
-            data_to_insert = []
-
-            for k, text in enumerate(chunks):
-                try:
-                    chunk_index = k + 1  # Start chunk numbering from 1
-                    chunk_text = f"{title}\n{text}"
-
-                    chunk_xxh64 = xxhash.xxh64(
-                        chunk_text.encode("utf-8"), seed=2025
-                    ).hexdigest()
-
-                    embeddings = generate_embeddings_with_retry(
-                        data=chunk_text, attempts=5, model=model
-                    )[0]
-
-                    chunk_id = f"{cid}_{chunk_index}"  # Unique ID for each chunk
-
-                    new_data = (
-                        chunk_id,  # Primary key
-                        cid,  # Original document ID
-                        chunk_index,  # Chunk number
-                        chunk_xxh64,  # Hash of chunk_text
-                        nature,
-                        solution,
-                        title,
-                        number,
-                        decision_date,
-                        text,  # Original text
-                        chunk_text,
-                        embeddings,
-                    )
-                    data_to_insert.append(new_data)
-                except PermissionDeniedError as e:
-                    logger.error(
-                        f"PermissionDeniedError (API key issue) for chunk {chunk_index} of file {file_name}: {e}"
-                    )
-                    raise e
-
-            # Inserting all chunks at once
-            if data_to_insert:
-                insert_data(data=data_to_insert, table_name=table_name)
-
-        except Exception as e:
-            logger.error(f"Error processing file {file_name}: {e}")
-            raise e
-
+    
     elif file_name.startswith("JADETEXT") and file_name.endswith(".xml"):
-        if not is_fiscal_ruling(root):            
-            # logger.info(f"Skipping file {file_name} with category not identified as fiscal ruling.")
-            return  # Skip processing for this file
+        
         table_name = "jade"
         try:
             cid = root.find(".//ID").text
@@ -996,420 +474,72 @@ def _process_dila_xml_content(root: ET.Element, file_name: str, model: str):
             
             text_content = "\n".join(text_content)
             data_to_insert = []
-            chunks = make_chunks(text=text_content)
+            with _telemetry_stage(telemetry, "chunking"):
+                chunks = make_chunks(text=text_content)
+            chunk_rows = []
+            chunk_texts = []
             for k, text in enumerate(chunks):
                 try:
-                    chunk_index = 1  # Whole document = one chunk
+                    chunk_index = k + 1
                     chunk_text = f"{title}\n{text}" if title else text
 
                     chunk_xxh64 = xxhash.xxh64(
                         chunk_text.encode("utf-8"), seed=2025
                     ).hexdigest()
 
-                    embeddings = generate_embeddings_with_retry(
-                        data=chunk_text, attempts=5, model=model
-                    )[0]
-
                     chunk_id = f"{cid}_{chunk_index}"
-
-                    new_data = (
-                        chunk_id,
-                        cid,
-                        chunk_index,
-                        chunk_xxh64,
-                        nature,
-                        solution,
-                        title,
-                        number,
-                        decision_date,
-                        jurisdiction,
-                        formation,
-                        text_content,
-                        chunk_text,
-                        embeddings,
+                    chunk_rows.append(
+                        (
+                            chunk_id,
+                            cid,
+                            chunk_index,
+                            chunk_xxh64,
+                            nature,
+                            solution,
+                            title,
+                            number,
+                            decision_date,
+                            jurisdiction,
+                            formation,
+                            text_content,
+                            chunk_text,
+                        )
                     )
-                    data_to_insert.append(new_data)
+                    chunk_texts.append(chunk_text)
                 except PermissionDeniedError as e:
                     logger.error(
                         f"PermissionDeniedError (API key issue) for file {file_name}: {e}"
                     )
                     raise e
 
+            with _telemetry_stage(telemetry, "embedding"):
+                embeddings_list = _embed_texts(chunk_texts=chunk_texts, model=model, telemetry=telemetry)
+            for row_data, embeddings in zip(chunk_rows, embeddings_list):
+                data_to_insert.append((*row_data, embeddings))
+
+            if telemetry is not None:
+                telemetry.add_counter("docs_processed", 1)
+                telemetry.add_counter("chunks_produced", len(data_to_insert))
+
             if data_to_insert:
-                insert_data(data=data_to_insert, table_name=table_name)
-                upsert_jade_node(data_to_insert)
+                if persist:
+                    with _telemetry_stage(telemetry, "postgres_insert"):
+                        insert_data(data=data_to_insert, table_name=table_name)
+                    with _telemetry_stage(telemetry, "graph_upsert"):
+                        upsert_jade_node(data_to_insert)
+                    if telemetry is not None:
+                        telemetry.add_counter("rows_written", len(data_to_insert))
+                return {
+                    "table_name": table_name,
+                    "graph_type": "jade",
+                    "data_to_insert": data_to_insert,
+                }
 
         except Exception as e:
             logger.error(f"Error processing file {file_name}: {e}")
             raise e
 
-    elif file_name.startswith("JORFDOLE") and file_name.endswith(".xml"):
-        # logger.info(f"Not processing JORFDOLE file: {file_name}")
-        return
-        table_name = "dole"
-        try:
-            cid = root.find(".//ID").text  # doc_id
-            title = root.find(".//TITRE").text
-            number = root.find(".//NUMERO").text
-            category = root.find(".//TYPE").text
-            wording = root.find(".//LIBELLE").text  # Libellé
-            creation_date = datetime.strptime(
-                root.find(".//DATE_CREATION").text, "%Y-%m-%d"
-            ).strftime("%Y-%m-%d")
-
-            exp_memo = root.find(
-                ".//EXPOSE_MOTIF"
-            )  # Explanatory Memorandum (Exposé des motifs)
-
-            if exp_memo:
-                # Extract all text
-                content = ET.tostring(exp_memo, method="xml")
-                content = "".join(ET.fromstring(content).itertext())
-                exp_memo = _dole_cut_exp_memo(text=content, section="introduction")
-                articles_synthesis_dict = _dole_cut_exp_memo(
-                    text=content, section="articles"
-                )
-            else:
-                exp_memo = None
-                articles_synthesis_dict = []
-
-            # Creating chunks for explanatory memorandum
-            chunks = make_chunks(
-                text=exp_memo, chunk_size=8000, chunk_overlap=0, length_function="len"
-            )
-            data_to_insert = []
-            if not chunks:
-                chunk_text = title
-                try:
-                    embeddings = generate_embeddings_with_retry(
-                        data=chunk_text, attempts=5, model=model
-                    )[0]
-                    chunk_index = 1  # Since there is only one chunk
-                    content_type = "explanatory_memorandum"
-                    chunk_id = f"{cid}_{chunk_index}"
-                    chunk_xxh64 = xxhash.xxh64(
-                        chunk_text.encode("utf-8"), seed=2025
-                    ).hexdigest()
-                    new_data = (
-                        chunk_id,
-                        cid,  # doc_id
-                        chunk_index,
-                        chunk_xxh64,  # Hash of chunk_text
-                        category,
-                        content_type,
-                        title,
-                        number if number else None,
-                        wording,
-                        creation_date,
-                        None,  # article_number
-                        None,  # article_title
-                        None,  # article_synthesis
-                        None,  # text
-                        chunk_text,
-                        embeddings,
-                    )
-                    data_to_insert.append(new_data)
-
-                except PermissionDeniedError as e:
-                    logger.error(
-                        f"PermissionDeniedError (API key issue) for chunk {chunk_index} of file {file_name}: {e}"
-                    )
-                    raise
-            else:
-                for k, text in enumerate(chunks):
-                    try:
-                        chunk_index = k + 1  # Start chunk numbering from 1
-                        chunk_text = (title + "\n" + text).replace(
-                            "\n\n", "\n"
-                        )  # Adding the title to the chunk text
-                        embeddings = generate_embeddings_with_retry(
-                            data=chunk_text,
-                            attempts=5,
-                            model=model,
-                        )[0]
-                        content_type = "explanatory_memorandum"
-                        chunk_id = f"{cid}_{chunk_index}"
-
-                        chunk_xxh64 = xxhash.xxh64(
-                            chunk_text.encode("utf-8"), seed=2025
-                        ).hexdigest()
-
-                        new_data = (
-                            chunk_id,
-                            cid,  # doc_id
-                            chunk_index,
-                            chunk_xxh64,  # Hash of chunk_text
-                            category,
-                            content_type,
-                            title,
-                            number if number else None,
-                            wording,
-                            creation_date,
-                            None,  # article_number
-                            None,  # article_title
-                            None,  # article_synthesis
-                            text,
-                            chunk_text,
-                            embeddings,
-                        )
-                        data_to_insert.append(new_data)
-
-                    except PermissionDeniedError as e:
-                        logger.error(
-                            f"PermissionDeniedError (API key issue) for chunk {chunk_index} of file {file_name}: {e}"
-                        )
-                        raise e
-
-            file_content_list = []
-            for k in range(1, 6):  # There can be up to 5 contenu_dossier sections
-                contenu_dossier = root.find(f".//CONTENU_DOSSIER_{k}")
-                if contenu_dossier is not None:
-                    # Extract all text
-                    content = ET.tostring(contenu_dossier, method="xml")
-                    content = "".join(ET.fromstring(content).itertext()).strip()
-
-                    if len(content) > 0:
-                        file_content_list.extend(_dole_cut_file_content(text=content))
-
-            results = []
-            if len(file_content_list) == 0 and len(articles_synthesis_dict) == 0:
-                results = [
-                    {
-                        "article_number": None,
-                        "article_synthesis": None,
-                        "article_text": None,
-                        "article_title": None,
-                    }
-                ]
-            elif len(articles_synthesis_dict) > 0 and len(file_content_list) == 0:
-                for article in articles_synthesis_dict:
-                    results.append(
-                        {
-                            "article_number": article.get("article_number", None),
-                            "article_synthesis": article.get("article_synthesis", None),
-                            "article_text": None,  # Because there is no file content
-                            "article_title": article.get("title_content", None),
-                        }
-                    )
-
-            elif len(articles_synthesis_dict) == 0 and len(file_content_list) > 0:
-                for content in file_content_list:
-                    results.append(
-                        {
-                            "article_number": content.get("article_number", None),
-                            "article_synthesis": None,  # Because there is no article synthesis
-                            "article_text": content.get("article_text", None),
-                            "article_title": None,  # Because there is no article synthesis
-                        }
-                    )
-
-            else:  # Both articles_synthesis_dict and file_content_list are not empty
-                # Merging articles_synthesis_dict and file_content_list by article_number
-                d1 = {
-                    d["article_number"]: d
-                    for d in articles_synthesis_dict
-                    if d["article_number"] is not None
-                }
-                d2 = {
-                    d["article_number"]: d
-                    for d in file_content_list
-                    if d["article_number"] is not None
-                }
-
-                for num in set(d1) | set(d2):
-                    try:
-                        merged = {
-                            "article_number": num,
-                            "article_synthesis": d1.get(num, {})
-                            .get("article_synthesis", None)
-                            .strip()
-                            if d1.get(num, {}).get("article_synthesis")
-                            else None,
-                            "article_text": d2.get(num, {})
-                            .get("article_text", None)
-                            .strip()
-                            if d2.get(num, {}).get("article_text")
-                            else None,
-                            "article_title": d1.get(num, {})
-                            .get("title_content", None)
-                            .strip()
-                            if d1.get(num, {}).get("title_content")
-                            else None,
-                        }
-                        results.append(merged)
-                    except Exception as e:
-                        logger.error(
-                            f"Error merging data for article number {num}: {e}"
-                        )
-                        raise e
-
-                # Adding all articles with article_number = None
-                for d in articles_synthesis_dict:
-                    if d["article_number"] is None:
-                        merged = {
-                            "article_number": None,
-                            "article_synthesis": d.get("article_synthesis").strip()
-                            if d.get("article_synthesis")
-                            else None,
-                            "article_text": None,
-                            "article_title": d.get("title_content").strip()
-                            if d.get("title_content")
-                            else None,
-                        }
-                        results.append(merged)
-
-                for d in file_content_list:
-                    if d["article_number"] is None:
-                        merged = {
-                            "article_number": None,
-                            "article_synthesis": None,
-                            "article_text": d["article_text"].strip()
-                            if d.get("article_text")
-                            else None,
-                            "article_title": None,
-                        }
-                        results.append(merged)
-
-            for result_number, result in enumerate(results):
-                if (
-                    result.get("article_number") is not None
-                ):  # The chunks will be created and chunked by article number
-                    content_type = "article"
-                    chunks = [
-                        str(result.get("article_synthesis", ""))
-                        if result.get("article_synthesis") is not None
-                        else "",
-                    ]
-                    if result.get("article_text"):
-                        article_text = result.get("article_text")
-                        if article_text is not None:
-                            chunks.append(str(article_text).strip())
-                    chunk_text = (
-                        "\n".join(chunks).replace("\n\n", "\n").strip()
-                    )  # Combining article synthesis and text
-                    chunks = make_chunks(
-                        text=chunk_text,
-                        chunk_size=8000,
-                        chunk_overlap=0,
-                        length_function="len",
-                    )
-
-                    for k, text in enumerate(chunks):
-                        chunk_index = k + 1  # Start chunk numbering from 1
-                        chunk_id = f"{cid}_{chunk_index}"  # Unique ID for each chunk
-
-                        if (
-                            chunk_index == 1
-                        ):  # Because the first chunk always contains the article number
-                            chunk_text = f"{title}\n{text}"
-                        else:
-                            if result.get("article_number", ""):
-                                chunk_text = f"{title}\nArticle {result.get('article_number', '')}:\n{text}"  # Adding the chunk number to remind which article number the chunk is related to
-                            else:
-                                chunk_text = f"{title}\n{text}"
-                        try:
-                            chunk_xxh64 = xxhash.xxh64(
-                                chunk_text.encode("utf-8"), seed=2025
-                            ).hexdigest()
-
-                            embeddings = generate_embeddings_with_retry(
-                                data=chunk_text,
-                                attempts=5,
-                                model=model,
-                            )[0]
-
-                            new_data = (
-                                chunk_id,
-                                cid,  # doc_id
-                                chunk_index,
-                                chunk_xxh64,  # Hash of chunk_text
-                                category,
-                                content_type,
-                                title,
-                                number if number else None,
-                                wording,
-                                creation_date,
-                                result.get("article_number", None),
-                                result.get("article_title", None),
-                                result.get("article_synthesis", None),
-                                text,
-                                chunk_text,
-                                embeddings,
-                            )
-                            data_to_insert.append(new_data)
-
-                        except PermissionDeniedError as e:
-                            logger.error(
-                                f"PermissionDeniedError (API key issue) for chunk {chunk_index} of file {file_name}: {e}"
-                            )
-                            raise
-
-                else:  # The chunks will be created by classic chunking
-                    chunk_index = result_number + 1
-                    chunk_id = f"{cid}_{chunk_index}"  # Unique ID for each chunk
-                    content_type = "dossier_content"
-                    chunks = []  # As it is impossible to have an article synthesis without an article number
-
-                    if result.get("article_text", ""):
-                        chunks.append(str(result.get("article_text")).strip())
-                    chunks = "\n".join(chunks).strip()
-
-                    chunks = make_chunks(
-                        text=chunks,
-                        chunk_size=8000,
-                        chunk_overlap=0,
-                        length_function="len",
-                    )
-
-                    for i, text in enumerate(chunks):
-                        try:
-                            chunk_text = (title + "\n" + text).replace(
-                                "\n\n", "\n"
-                            )  # Adding the title to the chunk text
-
-                            chunk_xxh64 = xxhash.xxh64(
-                                chunk_text.encode("utf-8"), seed=2025
-                            ).hexdigest()
-
-                            embeddings = generate_embeddings_with_retry(
-                                data=chunk_text,
-                                attempts=5,
-                                model=model,
-                            )[0]
-
-                            new_data = (
-                                chunk_id,
-                                cid,  # doc_id
-                                chunk_index,
-                                chunk_xxh64,  # Hash of chunk_text
-                                category,
-                                content_type,
-                                title,
-                                number if number else None,
-                                wording,
-                                creation_date,
-                                result.get("article_number", None),
-                                result.get("article_title", None),
-                                result.get("article_synthesis", None),
-                                text,
-                                chunk_text,
-                                embeddings,
-                            )
-                            data_to_insert.append(new_data)
-
-                        except PermissionDeniedError as e:
-                            logger.error(
-                                f"PermissionDeniedError (API key issue) for chunk {chunk_index} of file {file_name}: {e}"
-                            )
-                            raise
-
-            # Insert all chunks at once
-            if data_to_insert:
-                insert_data(data=data_to_insert, table_name=table_name)
-
-        except Exception as e:
-            logger.error(f"Error processing file {file_name}: {e}")
-            raise e
+    return None
 
 
 def _handle_dila_suppression_list(lines: list[str], table_name: str, source_name: str):
@@ -1444,7 +574,10 @@ def _handle_dila_suppression_list(lines: list[str], table_name: str, source_name
 
 
 def process_dila_xml_files(
-    source_path: str, streaming: bool = True, model: str = EMBEDDING_MODEL
+    source_path: str,
+    streaming: bool = True,
+    model: str = EMBEDDING_MODEL,
+    telemetry: PerfTelemetry | None = None,
 ):
     """Processes DILA XML files from a directory or a compressed archive.
 
@@ -1519,9 +652,14 @@ def process_dila_xml_files(
                             if file_object:
                                 with file_object as f:
                                     file_content = f.read()
-                            root = ET.fromstring(file_content)
+                            with _telemetry_stage(telemetry, "parse"):
+                                root = ET.fromstring(file_content)
                             _process_dila_xml_content(
-                                root=root, file_name=file_name, model=model
+                                root=root,
+                                file_name=file_name,
+                                model=model,
+                                persist=True,
+                                telemetry=telemetry,
                             )
 
                             # Save checkpoint after successful processing
@@ -1578,24 +716,89 @@ def process_dila_xml_files(
         last_processed_index = checkpoint.load()
         processed_count = 0
 
+        all_file_paths = []
         for root_dir, dirs, files in os.walk(source_path):
             xml_files = [f for f in files if f.endswith(".xml")]
+            for file_name in xml_files:
+                all_file_paths.append(os.path.join(root_dir, file_name))
 
-            for idx, file_name in enumerate(xml_files):
+        all_file_paths = sorted(all_file_paths)
+
+        if ENABLE_PARALLEL_PROCESSING and MAX_WORKERS > 1:
+            for i in range(0, len(all_file_paths), max(1, BATCH_SIZE_DOCS)):
+                batch_paths = all_file_paths[i : i + max(1, BATCH_SIZE_DOCS)]
+                indexed_batch = [
+                    (global_idx, file_path)
+                    for global_idx, file_path in enumerate(batch_paths, start=i)
+                    if global_idx > last_processed_index
+                ]
+                if not indexed_batch:
+                    continue
+
+                with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                    future_by_path = {
+                        file_path: executor.submit(_prepare_dila_payload_from_file, file_path, model)
+                        for _, file_path in indexed_batch
+                    }
+
+                    for file_global_index, file_path in indexed_batch:
+                        future = future_by_path[file_path]
+                        file_name = os.path.basename(file_path)
+                        try:
+                            payload_obj = future.result()
+                            payload, worker_stage_seconds = _extract_dila_result_payload(payload_obj)
+                            _merge_worker_stage_seconds(telemetry, worker_stage_seconds)
+
+                            if payload:
+                                if telemetry is not None:
+                                    telemetry.add_counter("docs_processed", 1)
+                                    telemetry.add_counter(
+                                        "chunks_produced",
+                                        len(payload.get("data_to_insert", [])),
+                                    )
+                                with _telemetry_stage(telemetry, "postgres_insert"):
+                                    _persist_dila_payload(payload)
+                                if telemetry is not None:
+                                    telemetry.add_counter(
+                                        "rows_written",
+                                        len(payload.get("data_to_insert", [])),
+                                    )
+
+                            checkpoint.save(
+                                file_global_index,
+                                metadata={"file_name": file_name, "type": "dila_xml"},
+                            )
+                        except Exception as e:
+                            logger.error(
+                                f"Error processing file {file_name} (index {file_global_index}): {e}"
+                            )
+                            logger.error(
+                                "Progress saved. Restart the process to resume from this point."
+                            )
+                            raise e
+                        finally:
+                            remove_file(file_path=file_path)
+                    gc.collect()
+        else:
+            for file_path in all_file_paths:
+                file_name = os.path.basename(file_path)
                 # Skip already processed files
                 if processed_count <= last_processed_index:
                     processed_count += 1
                     continue
 
-                file_path = os.path.join(root_dir, file_name)
                 try:
-                    tree = ET.parse(file_path)
-                    root = tree.getroot()
+                    with _telemetry_stage(telemetry, "parse"):
+                        tree = ET.parse(file_path)
+                        root = tree.getroot()
                     _process_dila_xml_content(
-                        root=root, file_name=file_name, model=model
+                        root=root,
+                        file_name=file_name,
+                        model=model,
+                        persist=True,
+                        telemetry=telemetry,
                     )
 
-                    # Save checkpoint after successful processing
                     checkpoint.save(
                         processed_count,
                         metadata={"file_name": file_name, "type": "dila_xml"},
@@ -1611,247 +814,13 @@ def process_dila_xml_files(
                     )
                     raise e
                 finally:
-                    remove_file(file_path=file_path)  # Remove the file after processing
+                    remove_file(file_path=file_path)
                     gc.collect()
 
         # All files processed successfully, remove checkpoint
         checkpoint.remove()
         logger.info(f"Successfully processed all files from {source_path}")
 
-
-def _process_sheets_content(
-    table_name: str,
-    corpus_handler: CorpusHandler,
-    checkpoint: CheckpointManager,
-    last_processed_index: int,
-    batch_size: int,
-    model: str,
-):
-    """
-    Process a batch of sheets data with checkpoint support for resume capability.
-    Args:
-        table_name (str): Name of the database table to insert data into
-        corpus_handler (CorpusHandler): Handler for iterating over documents and embeddings
-        checkpoint (CheckpointManager): Checkpoint manager for saving progress
-        last_processed_index (int): Index of the last processed document
-        batch_size (int): Number of documents to process per batch
-        model (str): Model name for embedding generation
-    """
-    processed_count = 0
-
-    if table_name == "travail_emploi":
-        for (
-            batch_documents,
-            batch_embeddings,
-        ) in corpus_handler.iter_docs_embeddings(
-            batch_size=batch_size,
-            model=model,
-        ):
-            data_to_insert = []
-
-            for document, embeddings in zip(batch_documents, batch_embeddings):
-                # Skip already processed documents
-                if processed_count <= last_processed_index:
-                    processed_count += 1
-                    continue
-                doc_id = document["sid"]
-                chunk_index = document["chunk_index"]
-                chunk_id = f"{doc_id}_{chunk_index}"
-                chunk_xxh64 = document["chunk_xxh64"]  # Hash of chunk_text
-                title = document["title"]
-                surtitle = document["surtitle"]
-                source = document["source"]
-                introduction = document["introduction"]
-                date = document["date"]
-                url = document["url"]
-                context = document["context"] if "context" in document else []
-                text = document["text"]
-                chunk_text = document["chunk_text"]
-
-                new_data = (
-                    chunk_id,
-                    doc_id,
-                    chunk_index,
-                    chunk_xxh64,
-                    title,
-                    surtitle,
-                    source,
-                    introduction,
-                    date,
-                    url,
-                    context,
-                    text,
-                    chunk_text,
-                    embeddings,
-                )
-                data_to_insert.append(new_data)
-                processed_count += 1
-
-            if data_to_insert:
-                try:
-                    insert_data(data=data_to_insert, table_name=table_name)
-                    # Save checkpoint after successful batch insertion
-                    checkpoint.save(
-                        processed_count - 1,
-                        metadata={
-                            "table": table_name,
-                            "batch_size": len(data_to_insert),
-                        },
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"Error inserting batch at index {processed_count}: {e}"
-                    )
-                    logger.error(
-                        "Progress saved. Restart the process to resume from this point."
-                    )
-                    raise e
-
-    elif table_name == "service_public":
-        for (
-            batch_documents,
-            batch_embeddings,
-        ) in corpus_handler.iter_docs_embeddings(batch_size):
-            data_to_insert = []
-
-            for document, embeddings in zip(batch_documents, batch_embeddings):
-                # Skip already processed documents
-                if processed_count <= last_processed_index:
-                    processed_count += 1
-                    continue
-                doc_id = document["sid"]
-                chunk_index = document["chunk_index"]
-                chunk_id = f"{doc_id}_{chunk_index}"
-                chunk_xxh64 = document["chunk_xxh64"]  # Hash of chunk_text
-                audience = document["audience"]
-                theme = document["theme"]
-                title = document["title"]
-                surtitle = document["surtitle"]
-                source = document["source"]
-                introduction = document["introduction"]
-                url = document["url"]
-                related_questions = document["related_questions"]
-                web_services = document["web_services"]
-                context = document["context"] if "context" in document else ""
-                text = document["text"]
-                chunk_text = document["chunk_text"]
-
-                new_data = (
-                    chunk_id,
-                    doc_id,
-                    chunk_index,
-                    chunk_xxh64,
-                    audience,
-                    theme,
-                    title,
-                    surtitle,
-                    source,
-                    introduction,
-                    url,
-                    json.dumps(related_questions),
-                    json.dumps(web_services),
-                    context,
-                    text,
-                    chunk_text,
-                    embeddings,
-                )
-                data_to_insert.append(new_data)
-                processed_count += 1
-
-            if data_to_insert:
-                try:
-                    insert_data(data=data_to_insert, table_name=table_name)
-                    # Save checkpoint after successful batch insertion
-                    checkpoint.save(
-                        processed_count - 1,
-                        metadata={
-                            "table": table_name,
-                            "batch_size": len(data_to_insert),
-                        },
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"Error inserting batch at index {processed_count}: {e}"
-                    )
-                    logger.error(
-                        "Progress saved. Restart the process to resume from this point."
-                    )
-                    raise e
-
-    else:
-        logger.error(f"Unknown table name '{table_name}' for sheets processing")
-        raise ValueError(f"Unknown table name '{table_name}' for sheets processing")
-
-
-def process_sheets(
-    table_name: str,
-    model: str = EMBEDDING_MODEL,
-    batch_size: int = 10,
-):
-    """
-    Process sheets data with checkpoint support for resume capability.
-
-    Args:
-        table_name (str): Name of the database table to insert data into
-        model (str): Model name for embedding generation
-        batch_size (int): Number of documents to process per batch
-    """
-
-    config = load_config(config_file_path=config_file_path)
-    data_sources = config.get(table_name.lower(), {})
-
-    for data_source_index, (data_source, attributes) in enumerate(data_sources.items()):
-        target_dir = os.path.join(BASE_PATH, attributes.get("download_folder", ""))
-        make_chunks_sheets(
-            storage_dir=target_dir,
-            structured=True,
-            chunk_size=1024,
-            chunk_overlap=0,
-            length_function=model,
-        )
-        json_path = os.path.join(target_dir, "sheets_as_chunks.json")
-        checkpoint = CheckpointManager(source_path=json_path)
-        last_processed_index = checkpoint.load()
-
-        with open(json_path, encoding="utf-8") as f:
-            documents = json.load(f)
-
-        total_documents = len(documents)
-        logger.info(
-            f"Total documents to process: {total_documents}, "
-            f"Starting from index: {last_processed_index + 1}"
-        )
-
-        corpus_name = target_dir.split("/")[-1]
-        corpus_handler = CorpusHandler.create_handler(corpus_name, documents)
-
-        if last_processed_index == -1 and data_source_index == 0:
-            logger.info("Starting processing from the beginning. Refreshing the table.")
-
-            with refresh_table(table_name, model):
-                _process_sheets_content(
-                    table_name=table_name,
-                    corpus_handler=corpus_handler,
-                    checkpoint=checkpoint,
-                    last_processed_index=last_processed_index,
-                    batch_size=batch_size,
-                    model=model,
-                )
-        else:
-            logger.info(f"Starting from checkpoint index {last_processed_index + 1}")
-            _process_sheets_content(
-                table_name=table_name,
-                corpus_handler=corpus_handler,
-                checkpoint=checkpoint,
-                last_processed_index=last_processed_index,
-                batch_size=batch_size,
-                model=model,
-            )
-
-        checkpoint.remove()
-        logger.info(
-            f"Successfully processed all {total_documents} documents for {table_name}"
-        )
 
 
 def _parse_bofip_path(file_path: str) -> dict:
@@ -1919,6 +888,7 @@ def _process_bofip_document(
     html_content: bytes,
     file_path: str,
     model: str,
+    telemetry: PerfTelemetry | None = None,
 ) -> list:
     """
     Process a single BOFiP document pair (``document.xml`` + ``data.html``), extract
@@ -1959,7 +929,8 @@ def _process_bofip_document(
     BOFIP_NS = "{https://bofip.impots.gouv.fr}"
 
     # ── XML metadata ────────────────────────────────────────────────────────
-    xml_root = ET.fromstring(xml_content)
+    with _telemetry_stage(telemetry, "parse"):
+        xml_root = ET.fromstring(xml_content)
 
     title = xml_root.findtext(f".//{DC}title")
     publication_date = xml_root.findtext(f".//{DC}date")
@@ -2037,12 +1008,16 @@ def _process_bofip_document(
     category_path = path_info.get("category_path")
 
     # ── HTML → plain text ───────────────────────────────────────────────────
-    soup = BeautifulSoup(html_content, "lxml")
+    with _telemetry_stage(telemetry, "parse"):
+        soup = BeautifulSoup(html_content, "lxml")
     raw_text = soup.get_text(separator="\n", strip=True)
     lines = [line for line in raw_text.splitlines() if line.strip()]
     text_content = "\n".join(lines)
     data_to_insert = []
-    chunks = make_chunks(text=text_content)
+    with _telemetry_stage(telemetry, "chunking"):
+        chunks = make_chunks(text=text_content)
+    row_payload = []
+    chunk_texts = []
     for k, text in enumerate(chunks):
         # ── Enriched chunk_text for embedding ───────────────────────────────────
         chunk_text_parts = []
@@ -2064,14 +1039,6 @@ def _process_bofip_document(
         chunk_id = f"{doc_id}_{chunk_index}"
         chunk_xxh64 = xxhash.xxh64(chunk_text.encode("utf-8"), seed=2025).hexdigest()
 
-        try:
-            embeddings = generate_embeddings_with_retry(
-                data=chunk_text, attempts=5, model=model
-            )[0]
-        except PermissionDeniedError as e:
-            logger.error(f"PermissionDeniedError generating embedding for {doc_id}: {e}")
-            raise
-
         new_data = (
             chunk_id,          # PRIMARY KEY
             doc_id,            # bofip:contenu_id (canonical identifier)
@@ -2088,10 +1055,23 @@ def _process_bofip_document(
             json.dumps(links, ensure_ascii=False),  # dc:relation links
             text,              # plain text extracted from data.html
             chunk_text,        # enriched text used for embedding
-            embeddings,        # embedding vector
         )
+        row_payload.append(new_data)
+        chunk_texts.append(chunk_text)
 
-        data_to_insert.append(new_data)
+    try:
+        with _telemetry_stage(telemetry, "embedding"):
+            embeddings_list = _embed_texts(chunk_texts=chunk_texts, model=model, telemetry=telemetry)
+    except PermissionDeniedError as e:
+        logger.error(f"PermissionDeniedError generating embedding for {doc_id}: {e}")
+        raise
+
+    for row_data, embeddings in zip(row_payload, embeddings_list):
+        data_to_insert.append((*row_data, embeddings))
+
+    if telemetry is not None:
+        telemetry.add_counter("docs_processed", 1)
+        telemetry.add_counter("chunks_produced", len(data_to_insert))
 
     return data_to_insert
 
@@ -2102,6 +1082,7 @@ def _process_bofip_tgz(
     checkpoint: CheckpointManager,
     last_processed_index: int,
     model: str,
+    telemetry: PerfTelemetry | None = None,
 ):
     """
     Process a single BOFiP ``.tgz`` archive and insert all documents into the database.
@@ -2184,11 +1165,16 @@ def _process_bofip_tgz(
                         html_content=html_content,
                         file_path=xml_path,
                         model=model,
+                        telemetry=telemetry,
                     )
 
                     if data_to_insert:
-                        insert_data(data=data_to_insert, table_name=table_name)
-                        upsert_bofip_node(data_to_insert)
+                        with _telemetry_stage(telemetry, "postgres_insert"):
+                            insert_data(data=data_to_insert, table_name=table_name)
+                        with _telemetry_stage(telemetry, "graph_upsert"):
+                            upsert_bofip_node(data_to_insert)
+                        if telemetry is not None:
+                            telemetry.add_counter("rows_written", len(data_to_insert))
 
                     checkpoint.save(
                         idx,
@@ -2236,7 +1222,11 @@ def _process_bofip_tgz(
         gc.collect()
 
 
-def process_bofip_files(table_name: str, model: str = EMBEDDING_MODEL):
+def process_bofip_files(
+    table_name: str,
+    model: str = EMBEDDING_MODEL,
+    telemetry: PerfTelemetry | None = None,
+):
     """
     Process all BOFiP ``.tgz`` archives found in the configured download folder.
 
@@ -2315,6 +1305,7 @@ def process_bofip_files(table_name: str, model: str = EMBEDDING_MODEL):
                         checkpoint=checkpoint,
                         last_processed_index=last_processed_index,
                         model=model,
+                        telemetry=telemetry,
                     )
             else:
                 _process_bofip_tgz(
@@ -2323,7 +1314,114 @@ def process_bofip_files(table_name: str, model: str = EMBEDDING_MODEL):
                     checkpoint=checkpoint,
                     last_processed_index=last_processed_index,
                     model=model,
+                    telemetry=telemetry,
                 )
+
+
+def process_bofip_selected_files(
+    table_name: str,
+    selected_folder: str,
+    model: str = EMBEDDING_MODEL,
+    telemetry: PerfTelemetry | None = None,
+):
+    """Process BOFiP files from selected folder structure built by smart_process_tax.sh."""
+    document_dirs = []
+    for root_dir, _, files in os.walk(selected_folder):
+        file_set = set(files)
+        if "document.xml" in file_set and "data.html" in file_set:
+            document_dirs.append(root_dir)
+
+    document_dirs = sorted(document_dirs)
+
+    if not document_dirs:
+        logger.info(f"No selected BOFiP documents found in {selected_folder}")
+        return
+
+    logger.info(
+        f"Processing {len(document_dirs)} selected BOFiP document(s) from {selected_folder}"
+    )
+
+    work_items = []
+    for dir_path in document_dirs:
+        xml_path = os.path.join(dir_path, "document.xml")
+        html_path = os.path.join(dir_path, "data.html")
+        rel_xml_path = os.path.relpath(xml_path, selected_folder).replace(os.sep, "/")
+        work_items.append((xml_path, html_path, rel_xml_path))
+
+    if ENABLE_PARALLEL_PROCESSING and MAX_WORKERS > 1:
+        for i in range(0, len(work_items), max(1, BATCH_SIZE_DOCS)):
+            batch = work_items[i : i + max(1, BATCH_SIZE_DOCS)]
+            with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                futures = [
+                    executor.submit(
+                        _prepare_bofip_payload_from_paths,
+                        xml_path,
+                        html_path,
+                        rel_xml_path,
+                        model,
+                    )
+                    for xml_path, html_path, rel_xml_path in batch
+                ]
+
+                for future in futures:
+                    try:
+                        result_obj = future.result()
+                        data_to_insert, worker_stage_seconds = _extract_bofip_result_payload(result_obj)
+                        _merge_worker_stage_seconds(telemetry, worker_stage_seconds)
+
+                        if data_to_insert:
+                            if telemetry is not None:
+                                telemetry.add_counter("docs_processed", 1)
+                                telemetry.add_counter("chunks_produced", len(data_to_insert))
+                            with _telemetry_stage(telemetry, "postgres_insert"):
+                                insert_data(data=data_to_insert, table_name=table_name)
+                            with _telemetry_stage(telemetry, "graph_upsert"):
+                                upsert_bofip_node(data_to_insert)
+                            if telemetry is not None:
+                                telemetry.add_counter("rows_written", len(data_to_insert))
+                    except ET.ParseError as e:
+                        logger.error("XML parse error for selected BOFiP document: %s", e)
+                        continue
+                    except PermissionDeniedError:
+                        raise
+                    except Exception as e:
+                        logger.error("Error processing selected BOFiP document: %s", e)
+                        raise
+            gc.collect()
+    else:
+        for idx, (xml_path, html_path, rel_xml_path) in enumerate(work_items):
+            try:
+                result_obj = _prepare_bofip_payload_from_paths(
+                    xml_path=xml_path,
+                    html_path=html_path,
+                    rel_xml_path=rel_xml_path,
+                    model=model,
+                )
+                data_to_insert, worker_stage_seconds = _extract_bofip_result_payload(result_obj)
+                _merge_worker_stage_seconds(telemetry, worker_stage_seconds)
+
+                if data_to_insert:
+                    if telemetry is not None:
+                        telemetry.add_counter("docs_processed", 1)
+                        telemetry.add_counter("chunks_produced", len(data_to_insert))
+                    with _telemetry_stage(telemetry, "postgres_insert"):
+                        insert_data(data=data_to_insert, table_name=table_name)
+                    with _telemetry_stage(telemetry, "graph_upsert"):
+                        upsert_bofip_node(data_to_insert)
+                    if telemetry is not None:
+                        telemetry.add_counter("rows_written", len(data_to_insert))
+
+                if idx > 0 and idx % 100 == 0:
+                    gc.collect()
+
+            except ET.ParseError as e:
+                logger.error(f"XML parse error for selected BOFiP document at {xml_path}: {e}")
+                continue
+            except PermissionDeniedError:
+                raise
+            except Exception as e:
+                logger.error(f"Error processing selected BOFiP document at {xml_path}: {e}")
+                raise
 
 
 def process_data(table_name: str, streaming: bool = True, model: str = EMBEDDING_MODEL):
@@ -2337,179 +1435,78 @@ def process_data(table_name: str, streaming: bool = True, model: str = EMBEDDING
         If False, extracts the archive files before processing.
         model (str, optional): The model to use for processing (default: EMBEDDING_MODEL).
     """
-    config = load_config(config_file_path=config_file_path)
-    data_sources = config.get(table_name.lower(), {})
-    for data_source_index, (data_source, attributes) in enumerate(data_sources.items()):
-        base_folder = os.path.join(BASE_PATH, attributes.get("download_folder", ""))
+    telemetry = PerfTelemetry(run_name=f"process_{table_name.lower()}")
+    telemetry.maybe_start_profilers()
+    try:
+        with _telemetry_stage(telemetry, "smart_preprocessing"):
+            _run_smart_process_tax_if_needed(table_name=table_name)
 
-        if attributes.get("type") == "directory":
-            logger.info(f"Processing directory files located in : {base_folder}")
-            process_directories(
-                table_name=table_name,
-                model=model,
-            )
+        config = load_config(config_file_path=config_file_path)
+        data_sources = config.get(table_name.lower(), {})
+        for data_source, attributes in data_sources.items():
+            base_folder = os.path.join(BASE_PATH, attributes.get("download_folder", ""))
 
-            logger.info(
+            if attributes.get("type") == "bofip":
+                selected_bofip_folder = _get_selected_folder(table_name=table_name)
+                if not _has_bofip_selected_documents(selected_folder=selected_bofip_folder):
+                    raise FileNotFoundError(
+                        f"No selected BOFiP document.xml/data.html pairs found in {selected_bofip_folder}"
+                    )
                 logger.info(
-                    f"Folder: {base_folder} successfully processed and data successfully inserted into the postgres database"
+                    f"Processing selected BOFiP files located in: {selected_bofip_folder}"
                 )
-            )
-
-            remove_folder(folder_path=base_folder)
-            logger.debug(f"Folder: {base_folder} successfully removed after processing")
-        elif attributes.get("type") == "data_gouv":
-            logger.info(f"Processing files located in : {base_folder}")
-
-            process_data_gouv_files(table_name=table_name, model=model)
-
-            logger.info(
-                f"Folder: {base_folder} successfully processed and data successfully inserted into the postgres database"
-            )
-
-            remove_folder(folder_path=base_folder)
-            logger.debug(f"Folder: {base_folder} successfully removed after processing")
-        elif attributes.get("type") == "sheets":
-            if (
-                data_source_index == 0
-            ):  # To start process only once, as there can be multiple data sources for sheets type
-                logger.info(f"Processing files located in : {base_folder}")
-
-                process_sheets(
+                process_bofip_selected_files(
                     table_name=table_name,
+                    selected_folder=selected_bofip_folder,
                     model=model,
+                    telemetry=telemetry,
                 )
-
                 logger.info(
-                    f"Folder: {base_folder} successfully processed and data successfully inserted into the postgres database"
+                    f"Selected BOFiP files in {selected_bofip_folder} successfully processed"
                 )
 
-                remove_folder(folder_path=base_folder)
-                logger.debug(
-                    f"Folder: {base_folder} successfully removed after processing"
+            elif attributes.get("type") == "dila_folder":
+                selected_dila_folder = _get_selected_folder(table_name=table_name)
+                if not _directory_has_suffix(selected_dila_folder, ".xml"):
+                    raise FileNotFoundError(
+                        f"No selected DILA XML files found in {selected_dila_folder}"
+                    )
+                logger.info(
+                    f"Processing selected DILA XML files located in: {selected_dila_folder}"
+                )
+                process_dila_xml_files(
+                    source_path=selected_dila_folder,
+                    streaming=False,
+                    model=model,
+                    telemetry=telemetry,
+                )
+                logger.info(
+                    f"Selected DILA files in {selected_dila_folder} successfully processed"
                 )
             else:
-                pass
-
-        elif attributes.get("type") == "bofip":
-            logger.info(f"Processing BOFiP files located in: {base_folder}")
-            process_bofip_files(table_name=table_name, model=model)
-            logger.info(f"BOFiP files in {base_folder} successfully processed")
-
-        elif attributes.get("type") == "dila_folder":
-            if streaming:
-                all_entities = sorted(
-                    [f for f in os.listdir(base_folder) if f.endswith(".tar.gz")]
+                logger.error(f"Unknown base folder '{base_folder}' for processing data.")
+                raise ValueError(
+                    f"Unknown base folder '{base_folder}' for processing data."
                 )
-                # Placing the freemium file at the beginning
-                try:
-                    freemium_file = next(
-                        (
-                            file
-                            for file in all_entities
-                            if file.lower().startswith("freemium")
-                        ),
-                        None,
-                    )
-                    all_entities.remove(freemium_file)
-                    all_entities.insert(0, freemium_file)
-                except ValueError:
-                    logger.debug(f"There is no freemium file in {all_entities}")
-                all_entities = [os.path.join(base_folder, f) for f in all_entities]
-
-                for entity in (
-                    all_entities
-                ):  # entity is the name of each tar.gz file inside the base_folder
-                    # Remove obscolete CIDs from the table based on the suppression list file
-                    try:
-                        with tarfile.open(entity, "r:gz") as tar:
-                            for member in tar.getmembers():
-                                if member.isfile() and os.path.basename(
-                                    member.name
-                                ).startswith("liste_suppression"):
-                                    file_object = tar.extractfile(member)
-
-                                    if file_object:
-                                        with file_object as f:
-                                            lines = (
-                                                f.read().decode("utf-8").splitlines()
-                                            )
-                                        _handle_dila_suppression_list(
-                                            lines=lines,
-                                            table_name=table_name,
-                                            source_name=entity,
-                                        )
-                                        break  # As we found the suppression list, no need to continue
-                    except Exception as e:
-                        logger.error(
-                            f"Error while finding suppression list from archive {entity}: {e}"
-                        )
-                        continue
-
-                    # Process the XML files in the archive file
-                    process_dila_xml_files(
-                        source_path=entity, streaming=streaming, model=model
-                    )
-                    logger.info(f"File: {entity} successfully processed")
-
-            else:
-                with os.scandir(base_folder) as it:
-                    all_entities = sorted(
-                        [entry.name for entry in it if entry.is_dir()]
-                    )  # List of all folders inside the base_folder
-
-                # Placing the {table_name} folder at the beginning which corresponds to the freemium exctraction (e.g. 'dole' for DOLE_DATA_FOLDER)
-                try:
-                    all_entities.remove(table_name)
-                    all_entities.insert(0, table_name)
-                except ValueError:
-                    logger.debug(
-                        f"There is no '{table_name}' directory in {base_folder}"
-                    )
-
-                for root_dir in (
-                    all_entities
-                ):  # root_dir is the name of each folder inside the base_folder
-                    # Remove obscolete CIDs from the table based on the suppression list file
-                    current_dir = os.path.join(base_folder, root_dir)
-                    for entity in os.listdir(current_dir):
-                        if entity.startswith("liste_suppression"):
-                            try:
-                                # doc_id_to_remove = []
-                                with open(os.path.join(current_dir, entity)) as f:
-                                    lines = f.readlines()
-                                    _handle_dila_suppression_list(
-                                        lines=lines,
-                                        table_name=table_name,
-                                        source_name=entity,
-                                    )
-                            except Exception as e:
-                                logger.error(
-                                    f"Error removing document IDs based on suppression list: {e}"
-                                )
-                                raise Exception(
-                                    f"Error removing document IDs based on suppression list: {e}"
-                                )
-
-                    target_dir = os.path.join(base_folder, root_dir)
-
-                    logger.info(f"Processing folder: {target_dir}")
-
-                    process_dila_xml_files(
-                        source_path=target_dir, streaming=streaming, model=model
-                    )
-                    logger.info(
-                        f"Folder: {target_dir} successfully processed and data successfully inserted into the database"
-                    )
-
-                    remove_folder(folder_path=current_dir)
-                    logger.debug(
-                        f"Folder: {current_dir} successfully removed after processing"
-                    )
-        else:
-            logger.error(f"Unknown base folder '{base_folder}' for processing data.")
-            raise ValueError(
-                f"Unknown base folder '{base_folder}' for processing data."
-            )
+    except Exception as exc:
+        telemetry.add_error("process_data", str(exc))
+        raise
+    finally:
+        profiler_results = telemetry.maybe_stop_profilers()
+        report = telemetry.finalize(
+            metadata={
+                "table_name": table_name,
+                "streaming": streaming,
+                "parallel_processing": ENABLE_PARALLEL_PROCESSING,
+                "max_workers": MAX_WORKERS,
+                "batch_size_docs": BATCH_SIZE_DOCS,
+            }
+        )
+        if profiler_results.get("memory"):
+            report["memory"] = profiler_results["memory"]
+        if profiler_results.get("cprofile"):
+            report["cprofile_top"] = profiler_results["cprofile"]
+        telemetry.write_report(report=report, suffix=table_name.lower())
 
 
 def process_all_data(
