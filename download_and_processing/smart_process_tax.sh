@@ -3,60 +3,126 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+DATA_ROOT="${PROJECT_ROOT}/data"
+UNPROCESSED_ROOT="${DATA_ROOT}/unprocessed"
+SELECTED_ROOT="${DATA_ROOT}/selected"
+EXPERIMENTAL_ROOT="${DATA_ROOT}/experimental"
 
 # PREPARE FOLDERS
-cd "${PROJECT_ROOT}/data"
-mkdir -p selected/legi selected/jade selected/bofip
-mkdir -p experimental/legi experimental/jade experimental/bofip
+mkdir -p \
+  "${SELECTED_ROOT}/legi" "${SELECTED_ROOT}/jade" "${SELECTED_ROOT}/bofip" \
+  "${EXPERIMENTAL_ROOT}/legi" "${EXPERIMENTAL_ROOT}/jade" "${EXPERIMENTAL_ROOT}/bofip"
 
 # Keep reruns deterministic by cleaning previous smart selection artifacts.
-find selected/legi -mindepth 1 -delete
-find selected/jade -mindepth 1 -delete
-find selected/bofip -mindepth 1 -delete
-find experimental/legi -mindepth 1 -delete
-find experimental/jade -mindepth 1 -delete
-find experimental/bofip -mindepth 1 -delete
+# find "${SELECTED_ROOT}/legi" -mindepth 1 -delete
+# find "${SELECTED_ROOT}/jade" -mindepth 1 -delete
+# find "${SELECTED_ROOT}/bofip" -mindepth 1 -delete
+# find "${EXPERIMENTAL_ROOT}/legi" -mindepth 1 -delete
+# find "${EXPERIMENTAL_ROOT}/jade" -mindepth 1 -delete
+# find "${EXPERIMENTAL_ROOT}/bofip" -mindepth 1 -delete
 
-# EXTRACT  AND SELECT
+copy_rg_matches() {
+  local source_dir="$1"
+  local filename_glob="$2"
+  local search_pattern="$3"
+  local destination_dir="$4"
 
-## unzip all unprocessed from legi
-cd experimental/legi
-#find ../unprocessed/legi -type f -name "*.tar.gz" -exec  tar -xzf {} ';'
-find ../../unprocessed/legi -type f -name "*.tar.gz" -print0 | xargs -0 -r -I{} -P 10 tar -xzf {}
+  set +e
+  rg -l -0 -g "${filename_glob}" "${search_pattern}" "${source_dir}" | xargs -0 -r cp -n -t "${destination_dir}/"
+#  rg -l -0 -g "${filename_glob}" "${search_pattern}" "${source_dir}" | xargs -0 -r rsync -a --ignore-existing -q -t "${destination_dir}/" 
+  
+  local -a pipeline_status=("${PIPESTATUS[@]}")
+  set -e
 
-## unzip all unprocessed from jade
-cd ../jade
-find ../../unprocessed/jade -type f -name "*.tar.gz" -print0 | xargs -0 -r -I{} -P 10 tar -xzf {}
-
-## unzip all unprocessed from bofip
-cd ../bofip
-find ../../unprocessed/bofip -type f -name "*.tgz" -print0 | xargs -0 -r -I{} -P 10 tar -xzf {}
-
-## isolate CGI, LPF, AN_1, AN_2, AN_3, AN_4, CIBS from legi
-cd ../legi
-rg -l -0 -g 'LEGI*.xml' 'LEGITEXT000006069577|LEGITEXT000006069583|LEGITEXT000044594668|LEGITEXT000006069569|LEGITEXT000006069574|LEGITEXT000006069576|LEGITEXT000044595989' | xargs -0 -r -P 10 cp -t ../../selected/legi/
-
-
-
-## isolate Fiscal ruling from jade
-cd ../jade
-rg -l -0 -g 'CETA*.xml' 'SCT [^>]*?>19-' | xargs -0 -r -P 10 cp -t ../../selected/jade/
-
-## keep BOFiP document.xml + data.html pairs with original hierarchy
-cd ../bofip
-while IFS= read -r -d '' html_file; do
-  doc_dir="$(dirname "$html_file")"
-  xml_file="${doc_dir}/document.xml"
-  rel_dir="${doc_dir#./}"
-  dest_dir="../../selected/bofip/${rel_dir}"
-
-  mkdir -p "$dest_dir"
-  cp "$html_file" "${dest_dir}/data.html"
-
-  if [[ -f "$xml_file" ]]; then
-    cp "$xml_file" "${dest_dir}/document.xml"
+  if [[ "${pipeline_status[0]}" -gt 1 || "${pipeline_status[1]}" -ne 0 ]]; then
+    echo "Failed to copy filtered files from ${source_dir}" >&2
+    exit 1
   fi
-done < <(find . -type f -name "data.html" -print0)
+}
+
+process_legi_archive() {
+  local archive_path="$1"
+  local work_dir
+
+  work_dir="$(mktemp -d "${EXPERIMENTAL_ROOT}/legi/archive.XXXXXX")"
+  tar -xzf "${archive_path}" -C "${work_dir}"
+  rm -f "${archive_path}"
+
+  copy_rg_matches \
+    "${work_dir}" \
+    "LEGI*.xml" \
+    "LEGITEXT000006069577|LEGITEXT000006069583|LEGITEXT000044594668|LEGITEXT000006069569|LEGITEXT000006069574|LEGITEXT000006069576|LEGITEXT000044595989" \
+    "${SELECTED_ROOT}/legi"
+
+  rm -rf "${work_dir}"
+}
+
+process_jade_archive() {
+  local archive_path="$1"
+  local work_dir
+
+  work_dir="$(mktemp -d "${EXPERIMENTAL_ROOT}/jade/archive.XXXXXX")"
+  tar -xzf "${archive_path}" -C "${work_dir}"
+  rm -f "${archive_path}"
+
+  copy_rg_matches \
+    "${work_dir}" \
+    "CETA*.xml" \
+    "SCT [^>]*?>19-" \
+    "${SELECTED_ROOT}/jade"
+
+  rm -rf "${work_dir}"
+}
+
+process_bofip_archive() {
+  local archive_path="$1"
+  local work_dir
+
+  work_dir="$(mktemp -d "${EXPERIMENTAL_ROOT}/bofip/archive.XXXXXX")"
+  tar -xzf "${archive_path}" -C "${work_dir}"
+  rm -f "${archive_path}"
+
+  while IFS= read -r -d '' html_file; do
+    local doc_dir xml_file rel_dir dest_dir
+    doc_dir="$(dirname "${html_file}")"
+    xml_file="${doc_dir}/document.xml"
+    if [[ "${doc_dir}" == "${work_dir}" ]]; then
+      rel_dir="."
+    else
+      rel_dir="${doc_dir#${work_dir}/}"
+    fi
+
+    if [[ "${rel_dir}" == "." ]]; then
+      dest_dir="${SELECTED_ROOT}/bofip"
+    else
+      dest_dir="${SELECTED_ROOT}/bofip/${rel_dir}"
+    fi
+
+    mkdir -p "${dest_dir}"
+    #rsync -a --ignore-existing -q  "${html_file}" "${dest_dir}/data.html"
+    cp -n  "${html_file}" "${dest_dir}/data.html"
+
+    if [[ -f "${xml_file}" ]]; then
+      #rsync -a --ignore-existing "${xml_file}" "${dest_dir}/document.xml"
+      cp -n "${xml_file}" "${dest_dir}/document.xml"
+    fi
+  done < <(find "${work_dir}" -type f -name "data.html" -print0)
+
+  rm -rf "${work_dir}"
+}
+
+# EXTRACT, SELECT, DELETE (one archive at a time)
+while IFS= read -r -d '' archive; do
+  process_legi_archive "${archive}"
+done < <(find "${UNPROCESSED_ROOT}/legi" -type f -name "*.tar.gz" -print0 | sort -z)
+
+while IFS= read -r -d '' archive; do
+  process_jade_archive "${archive}"
+done < <(find "${UNPROCESSED_ROOT}/jade" -type f -name "*.tar.gz" -print0 | sort -z)
+
+while IFS= read -r -d '' archive; do
+  process_bofip_archive "${archive}"
+done < <(find "${UNPROCESSED_ROOT}/bofip" -type f -name "*.tgz" -print0 | sort -z)
 
 
 # SELECT ALSO REFERENCES 
@@ -71,5 +137,3 @@ done < <(find . -type f -name "data.html" -print0)
 ## List bofip references
 
 ## Find and copy references  
-
-
