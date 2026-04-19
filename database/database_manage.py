@@ -1,5 +1,6 @@
 import atexit
 import json
+import math
 import os
 import time
 import uuid
@@ -1067,6 +1068,24 @@ def export_table_to_parquet(
             conn.close()
 
 
+def _sanitize_embedding(embedding):
+    """Replace NaN values in embedding vector with 0.0."""
+    if embedding is None:
+        return None
+    return [0.0 if math.isnan(v) else v for v in embedding]
+
+
+def _sanitize_row(row):
+    """Clean row data: replace NaN in last column (embedding) with 0.0."""
+    if not row or len(row) == 0:
+        return row
+    row_list = list(row)
+    last_val = row_list[-1]
+    if isinstance(last_val, (list, tuple)):
+        row_list[-1] = _sanitize_embedding(last_val)
+    return tuple(row_list)
+
+
 def insert_data(data: list, table_name: str, model=EMBEDDING_MODEL):
     """
     Inserts a list of data rows into the specified PostgreSQL table, handling upserts and duplicate avoidance.
@@ -1089,6 +1108,8 @@ def insert_data(data: list, table_name: str, model=EMBEDDING_MODEL):
     """
     if not data:
         return
+
+    data = [_sanitize_row(row) for row in data]
 
     with get_connection() as conn:
         cursor = conn.cursor()

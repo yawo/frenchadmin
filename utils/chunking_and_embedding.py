@@ -1,5 +1,6 @@
 import os
 import time
+import torch
 import xxhash
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from sentence_transformers import SentenceTransformer
@@ -20,6 +21,51 @@ _tokenizer_cache = {}  # Cache of loaded tokenizers keyed by model name
 _embedding_model_cache = {}  # Cache of loaded SentenceTransformer models keyed by model name
 
 
+def _repair_lemone_position_ids(
+    embedding_model: SentenceTransformer, model_name: str
+) -> None:
+    """Repair invalid position_ids buffer for lemone model after loading.
+
+    Some environments load this model with corrupted position_ids values, which
+    later triggers out-of-bounds indexing in rotary embeddings.
+    """
+    if model_name != "louisbrulenaudet/lemone-embed-pro":
+        return
+
+    transformer_module = next(
+        (module for module in embedding_model if hasattr(module, "auto_model")),
+        None,
+    )
+    if transformer_module is None:
+        return
+
+    auto_model = transformer_module.auto_model
+    if not hasattr(auto_model, "embeddings") or not hasattr(
+        auto_model.embeddings, "position_ids"
+    ):
+        return
+
+    max_position_embeddings = int(auto_model.config.max_position_embeddings)
+    sample_size = min(64, max_position_embeddings)
+    expected_prefix = torch.arange(sample_size, dtype=torch.long)
+    current_prefix = (
+        auto_model.embeddings.position_ids[:sample_size].detach().to("cpu", torch.long)
+    )
+    needs_repair = not torch.equal(current_prefix, expected_prefix)
+    if not needs_repair:
+        return
+
+    auto_model.embeddings.register_buffer(
+        "position_ids",
+        torch.arange(max_position_embeddings, device=auto_model.device, dtype=torch.long),
+        persistent=False,
+    )
+    logger.warning(
+        "Repaired corrupted position_ids buffer for '%s' to prevent rotary embedding index errors.",
+        model_name,
+    )
+
+
 def _get_embedding_model(model: str = EMBEDDING_MODEL) -> SentenceTransformer:
     """
     Returns a cached SentenceTransformer model, downloading it from HuggingFace if needed.
@@ -33,7 +79,9 @@ def _get_embedding_model(model: str = EMBEDDING_MODEL) -> SentenceTransformer:
     global _embedding_model_cache
     if model not in _embedding_model_cache:
         logger.info(f"Loading embedding model '{model}' from HuggingFace...")
-        _embedding_model_cache[model] = SentenceTransformer(model, trust_remote_code=True)
+        embedding_model = SentenceTransformer(model, trust_remote_code=True)
+        _repair_lemone_position_ids(embedding_model=embedding_model, model_name=model)
+        _embedding_model_cache[model] = embedding_model
     return _embedding_model_cache[model]
 
 
@@ -53,8 +101,8 @@ def generate_embeddings(
     if isinstance(data, str):
         data = [data]
     embedding_model = _get_embedding_model(model)
-    vectors = embedding_model.encode(data, convert_to_numpy=False)
-    return [v if isinstance(v, list) else list(v) for v in vectors]
+    vectors = embedding_model.encode(data, convert_to_numpy=True)
+    return [v.tolist() if hasattr(v, 'tolist') else list(v) for v in vectors]
 
 
 def generate_embeddings_with_retry(
@@ -240,5 +288,4 @@ def make_chunks(
     )
     chunks = text_splitter.split_text(text)
     return chunks
-
 

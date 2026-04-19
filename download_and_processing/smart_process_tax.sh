@@ -7,7 +7,7 @@ DATA_ROOT="${PROJECT_ROOT}/data"
 UNPROCESSED_ROOT="${DATA_ROOT}/unprocessed"
 SELECTED_ROOT="${DATA_ROOT}/selected"
 EXPERIMENTAL_ROOT="${DATA_ROOT}/experimental"
-
+#EXPERIMENTAL_ROOT="/media/hotep/Data/code/legalfrance/experimental"
 # PREPARE FOLDERS
 mkdir -p \
   "${SELECTED_ROOT}/legi" "${SELECTED_ROOT}/jade" "${SELECTED_ROOT}/bofip" \
@@ -28,7 +28,7 @@ copy_rg_matches() {
   local destination_dir="$4"
 
   set +e
-  rg -l -0 -g "${filename_glob}" "${search_pattern}" "${source_dir}" | xargs -0 -r cp -n -t "${destination_dir}/"
+  rg -l -0 -g "${filename_glob}" "${search_pattern}" "${source_dir}" | xargs -0 -r cp --update=none  -t "${destination_dir}/"
 #  rg -l -0 -g "${filename_glob}" "${search_pattern}" "${source_dir}" | xargs -0 -r rsync -a --ignore-existing -q -t "${destination_dir}/" 
   
   local -a pipeline_status=("${PIPESTATUS[@]}")
@@ -82,33 +82,33 @@ process_bofip_archive() {
   tar -xzf "${archive_path}" -C "${work_dir}"
   rm -f "${archive_path}"
 
-  while IFS= read -r -d '' html_file; do
-    local doc_dir xml_file rel_dir dest_dir
-    doc_dir="$(dirname "${html_file}")"
-    xml_file="${doc_dir}/document.xml"
-    if [[ "${doc_dir}" == "${work_dir}" ]]; then
-      rel_dir="."
-    else
-      rel_dir="${doc_dir#${work_dir}/}"
-    fi
+  #while IFS= read -r -d '' html_file; do
+     #local doc_dir xml_file rel_dir dest_dir
+     #doc_dir="$(dirname "${html_file}")"
+     #xml_file="${doc_dir}/document.xml"
+     #if [[ "${doc_dir}" == "${work_dir}" ]]; then
+      # rel_dir="."
+     #else
+      # rel_dir="${doc_dir#${work_dir}/}"
+     #fi
 
-    if [[ "${rel_dir}" == "." ]]; then
-      dest_dir="${SELECTED_ROOT}/bofip"
-    else
-      dest_dir="${SELECTED_ROOT}/bofip/${rel_dir}"
-    fi
+     #if [[ "${rel_dir}" == "." ]]; then
+      # dest_dir="${SELECTED_ROOT}/bofip"
+     #else
+       #dest_dir="${SELECTED_ROOT}/bofip/${rel_dir}"
+     #fi
 
-    mkdir -p "${dest_dir}"
-    #rsync -a --ignore-existing -q  "${html_file}" "${dest_dir}/data.html"
-    cp -n  "${html_file}" "${dest_dir}/data.html"
+    # mkdir -p "${dest_dir}"
+    # #rsync -a --ignore-existing -q  "${html_file}" "${dest_dir}/data.html"
+     #cp --update=none  "${html_file}" "${dest_dir}/data.html"
 
-    if [[ -f "${xml_file}" ]]; then
+    # if [[ -f "${xml_file}" ]]; then
       #rsync -a --ignore-existing "${xml_file}" "${dest_dir}/document.xml"
-      cp -n "${xml_file}" "${dest_dir}/document.xml"
-    fi
-  done < <(find "${work_dir}" -type f -name "data.html" -print0)
+       #cp --update=none  "${xml_file}" "${dest_dir}/document.xml"
+     #fi
+   #done < <(find "${work_dir}" -type f -name "data.html" -print0)
 
-  rm -rf "${work_dir}"
+  mv "${work_dir}" "${SELECTED_ROOT}/bofip/"
 }
 
 # EXTRACT, SELECT, DELETE (one archive at a time)
