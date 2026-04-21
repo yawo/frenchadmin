@@ -1,3 +1,4 @@
+import gc
 import os
 import time
 import torch
@@ -7,6 +8,9 @@ from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer
 
 from config import (
+    CHUNK_OVERLAP,
+    CHUNK_SIZE,
+    EMBEDDING_ENCODE_BATCH_SIZE,
     EMBEDDING_MODEL,
     EMBEDDING_BATCH_MAX_SIZE,
     EMBEDDING_RETRY_ATTEMPTS,
@@ -19,6 +23,22 @@ logger = get_logger(__name__)
 
 _tokenizer_cache = {}  # Cache of loaded tokenizers keyed by model name
 _embedding_model_cache = {}  # Cache of loaded SentenceTransformer models keyed by model name
+
+
+def _is_cuda_oom_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return "cuda out of memory" in message or "cuda error: out of memory" in message
+
+
+def _release_cuda_memory():
+    if not torch.cuda.is_available():
+        return
+    gc.collect()
+    torch.cuda.empty_cache()
+    try:
+        torch.cuda.ipc_collect()
+    except Exception:
+        pass
 
 
 def _repair_lemone_position_ids(
@@ -86,7 +106,10 @@ def _get_embedding_model(model: str = EMBEDDING_MODEL) -> SentenceTransformer:
 
 
 def generate_embeddings(
-    data: str | list[str], model: str = EMBEDDING_MODEL
+    data: str | list[str],
+    model: str = EMBEDDING_MODEL,
+    batch_size: int | None = None,
+    device: str | None = None,
 ) -> list[float]:
     """
     Generates embeddings for a given text using a HuggingFace model downloaded locally.
@@ -101,8 +124,14 @@ def generate_embeddings(
     if isinstance(data, str):
         data = [data]
     embedding_model = _get_embedding_model(model)
-    vectors = embedding_model.encode(data, convert_to_numpy=True)
-    return [v.tolist() if hasattr(v, 'tolist') else list(v) for v in vectors]
+    effective_batch_size = max(1, batch_size or EMBEDDING_ENCODE_BATCH_SIZE)
+    vectors = embedding_model.encode(
+        data,
+        batch_size=effective_batch_size,
+        convert_to_numpy=True,
+        device=device,
+    )
+    return [v.tolist() if hasattr(v, "tolist") else list(v) for v in vectors]
 
 
 def generate_embeddings_with_retry(
@@ -136,15 +165,38 @@ def generate_embeddings_with_retry(
             embeddings = generate_embeddings(data=data, model=model)
             return embeddings
         except Exception as e:
+            is_cuda_oom = _is_cuda_oom_error(e)
+            if is_cuda_oom:
+                _release_cuda_memory()
             if attempt == attempts - 1:  # If this is the last attempt
+                if is_cuda_oom:
+                    logger.warning(
+                        "CUDA OOM persisted after %s attempts. Falling back to CPU for this batch.",
+                        attempts,
+                    )
+                    try:
+                        return generate_embeddings(
+                            data=data,
+                            model=model,
+                            batch_size=1,
+                            device="cpu",
+                        )
+                    except Exception as cpu_error:
+                        logger.error(
+                            "Error generating embeddings for : %s ... CUDA OOM persisted and CPU fallback failed: %s",
+                            str(data)[:200],
+                            cpu_error,
+                        )
+                        raise cpu_error
                 logger.error(
                     f"Error generating embeddings for : {str(data)[:200]} ... Error: {e}. Maximum retries reached ({attempts}). Raising exception."
                 )
                 raise
+            retry_sleep = min(time_sleep, 5) if is_cuda_oom else time_sleep
             logger.error(
-                f"Error generating embeddings for : {str(data)[:200]} ... Error: {e}. Retrying in {time_sleep} seconds (attempt {attempt + 1}/{attempts})"
+                f"Error generating embeddings for : {str(data)[:200]} ... Error: {e}. Retrying in {retry_sleep} seconds (attempt {attempt + 1}/{attempts})"
             )
-            time.sleep(time_sleep)  # Waiting {time_sleep} seconds before retrying
+            time.sleep(retry_sleep)  # Waiting before retrying
 
 
 def embed_texts_with_retry(
@@ -222,8 +274,8 @@ def _get_length_function(length_function: str):
 
 def make_chunks(
     text: str,
-    chunk_size: int = 7500,
-    chunk_overlap: int = 500,
+    chunk_size: int = CHUNK_SIZE,
+    chunk_overlap: int = CHUNK_OVERLAP,
     length_function=EMBEDDING_MODEL,
 ) -> list[str]:
     """
@@ -288,4 +340,3 @@ def make_chunks(
     )
     chunks = text_splitter.split_text(text)
     return chunks
-
