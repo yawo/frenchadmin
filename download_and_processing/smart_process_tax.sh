@@ -4,10 +4,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DATA_ROOT="${PROJECT_ROOT}/data"
-UNPROCESSED_ROOT="${DATA_ROOT}/unprocessed"
+#UNPROCESSED_ROOT="${DATA_ROOT}/unprocessed"
+UNPROCESSED_ROOT="/media/hotep/Data/code/legaltemp/unprocessed"
 SELECTED_ROOT="${DATA_ROOT}/selected"
-EXPERIMENTAL_ROOT="${DATA_ROOT}/experimental"
-#EXPERIMENTAL_ROOT="/media/hotep/Data/code/legalfrance/experimental"
+#EXPERIMENTAL_ROOT="${DATA_ROOT}/experimental"
+EXPERIMENTAL_ROOT="/media/hotep/Data/code/legalfrance/experimental"
 # PREPARE FOLDERS
 mkdir -p \
   "${SELECTED_ROOT}/legi" "${SELECTED_ROOT}/jade" "${SELECTED_ROOT}/bofip" \
@@ -68,7 +69,7 @@ process_jade_archive() {
   copy_rg_matches \
     "${work_dir}" \
     "CETA*.xml" \
-    "SCT [^>]*?>19-" \
+    'SCT [^>]*?>19-' \
     "${SELECTED_ROOT}/jade"
 
   rm -rf "${work_dir}"

@@ -430,7 +430,7 @@ def _process_dila_xml_content(
             raise e
 
     
-    elif file_name.startswith("JADETEXT") and file_name.endswith(".xml"):
+    elif file_name.startswith("CETATEXT") and file_name.endswith(".xml"):
         
         table_name = "jade"
         try:
