@@ -30,7 +30,8 @@ services:
       start_period: 10s
     restart: always
     ports:
-      - "127.0.0.1:${FALKORDB_PORT:-6379}:6379"
+      - "${FALKORDB_PORT:-6379}:6379"
+      - "${FALKORDBUI_PORT:-3000}:3000"
     volumes:
       - falkordb_data:/data
   

@@ -1,6 +1,8 @@
 import gc
 import os
 import time
+from collections.abc import Callable
+
 import torch
 import xxhash
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -9,6 +11,7 @@ from transformers import AutoTokenizer
 
 from config import (
     CHUNK_OVERLAP,
+    CHUNK_MIN_FILL_RATIO,
     CHUNK_SIZE,
     EMBEDDING_ENCODE_BATCH_SIZE,
     EMBEDDING_MODEL,
@@ -271,6 +274,59 @@ def _get_length_function(length_function: str):
     return lambda text: len(tokenizer.encode(text))
 
 
+def _largest_suffix_prefix_overlap(left: str, right: str, max_scan: int = 4096) -> int:
+    """Find largest overlap where suffix(left) == prefix(right)."""
+    if not left or not right:
+        return 0
+    max_size = min(len(left), len(right), max_scan)
+    for size in range(max_size, 0, -1):
+        if left[-size:] == right[:size]:
+            return size
+    return 0
+
+
+def _merge_underfilled_chunks(
+    chunks: list[str],
+    chunk_size: int,
+    length_fn: Callable[[str], int],
+    min_fill_ratio: float,
+) -> list[str]:
+    """Merge chunks that are too small due to early separator splits."""
+    if len(chunks) < 2:
+        return chunks
+
+    min_fill = max(1, int(chunk_size * min_fill_ratio))
+    working = list(chunks)
+    merged: list[str] = []
+    idx = 0
+
+    while idx < len(working):
+        current = working[idx]
+        current_size = length_fn(current)
+
+        if current_size < min_fill and idx + 1 < len(working):
+            next_chunk = working[idx + 1]
+            overlap_size = _largest_suffix_prefix_overlap(current, next_chunk)
+            candidate = current + next_chunk[overlap_size:]
+            if length_fn(candidate) <= chunk_size:
+                working[idx + 1] = candidate
+                idx += 1
+                continue
+
+        merged.append(current)
+        idx += 1
+
+    # Final trailing small chunk can still happen after first pass.
+    if len(merged) >= 2 and length_fn(merged[-1]) < min_fill:
+        overlap_size = _largest_suffix_prefix_overlap(merged[-2], merged[-1])
+        candidate = merged[-2] + merged[-1][overlap_size:]
+        if length_fn(candidate) <= chunk_size:
+            merged[-2] = candidate
+            merged.pop()
+
+    return merged
+
+
 
 def make_chunks(
     text: str,
@@ -336,7 +392,13 @@ def make_chunks(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
         separators=legal_separators,
+        keep_separator="end",
         length_function=length_fn,
     )
     chunks = text_splitter.split_text(text)
-    return chunks
+    return _merge_underfilled_chunks(
+        chunks=chunks,
+        chunk_size=chunk_size,
+        length_fn=length_fn,
+        min_fill_ratio=CHUNK_MIN_FILL_RATIO,
+    )

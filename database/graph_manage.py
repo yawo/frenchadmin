@@ -29,6 +29,8 @@ Relationships
 """
 
 import json
+import math
+import time
 
 try:
     from falkordb import FalkorDB as _FalkorDB
@@ -97,16 +99,39 @@ def _get_graph():
         return None
 
 
+def _sanitize_graph_value(value):
+    """Recursively sanitize values before sending them to FalkorDB."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else 0.0
+    if isinstance(value, dict):
+        return {k: _sanitize_graph_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_graph_value(v) for v in value]
+    return value
+
+
 def _safe_query(query: str, params: dict):
-    """Execute a parameterised Cypher query; swallow all errors silently."""
+    """Execute parameterised Cypher query with non-fatal error reporting."""
     graph = _get_graph()
     if graph is None:
         return
+    safe_params = _sanitize_graph_value(params or {})
     try:
-        graph.query(query, params)
+        graph.query(query, safe_params)
     except Exception as exc:
-        logger.debug(
-            "FalkorDB query error (non-fatal): %s – query: %.120s", exc, query
+        doc_ref = ""
+        if isinstance(params, dict):
+            doc_ref = (
+                params.get("doc_id")
+                or params.get("source_id")
+                or params.get("target_id")
+                or ""
+            )
+        logger.warning(
+            "FalkorDB query failed (non-fatal) doc=%s: %s – query: %.120s",
+            doc_ref,
+            exc,
+            " ".join(query.split()),
         )
 
 
@@ -175,6 +200,7 @@ def upsert_legi_node(data_to_insert: list):
         return
 
     try:
+        started_at = time.perf_counter()
         docs = _group_rows_by_doc_id(data_to_insert)
         for doc_id, rows in docs.items():
             first = rows[0]
@@ -307,9 +333,23 @@ def upsert_legi_node(data_to_insert: list):
                         """,
                         {"target_id": target_id, "source_id": doc_id},
                     )
+        elapsed = time.perf_counter() - started_at
+        logger.info(
+            "Graph upsert stage completed: label=%s docs=%s rows=%s mode=%s sec=%.3f",
+            "LegalText",
+            len(docs),
+            len(data_to_insert),
+            "batch" if ENABLE_BATCH_GRAPH_UPSERT else "sequential",
+            elapsed,
+        )
 
     except Exception as exc:
-        logger.warning("upsert_legi_node failed (non-fatal): %s", exc)
+        logger.error(
+            "Graph upsert stage failed: label=%s rows=%s error=%s",
+            "LegalText",
+            len(data_to_insert),
+            exc,
+        )
 
 
 # ── JADE ─────────────────────────────────────────────────────────────────────
@@ -356,6 +396,7 @@ def upsert_jade_node(data_to_insert: list):
         return
 
     try:
+        started_at = time.perf_counter()
         docs = _group_rows_by_doc_id(data_to_insert)
         for doc_id, rows in docs.items():
             first = rows[0]
@@ -437,9 +478,23 @@ def upsert_jade_node(data_to_insert: list):
                         """,
                         {"name": params["jurisdiction_value"], "doc_id": doc_id},
                     )
+        elapsed = time.perf_counter() - started_at
+        logger.info(
+            "Graph upsert stage completed: label=%s docs=%s rows=%s mode=%s sec=%.3f",
+            "JudicialDecision",
+            len(docs),
+            len(data_to_insert),
+            "batch" if ENABLE_BATCH_GRAPH_UPSERT else "sequential",
+            elapsed,
+        )
 
     except Exception as exc:
-        logger.warning("upsert_jade_node failed (non-fatal): %s", exc)
+        logger.error(
+            "Graph upsert stage failed: label=%s rows=%s error=%s",
+            "JudicialDecision",
+            len(data_to_insert),
+            exc,
+        )
 
 
 # ── BOFiP ────────────────────────────────────────────────────────────────────
@@ -493,6 +548,7 @@ def upsert_bofip_node(data_to_insert: list):
         return
 
     try:
+        started_at = time.perf_counter()
         docs = _group_rows_by_doc_id(data_to_insert)
         for doc_id, rows in docs.items():
             first = rows[0]
@@ -606,7 +662,20 @@ def upsert_bofip_node(data_to_insert: list):
                         """,
                         {"target_id": target_id, "source_id": doc_id},
                     )
+        elapsed = time.perf_counter() - started_at
+        logger.info(
+            "Graph upsert stage completed: label=%s docs=%s rows=%s mode=%s sec=%.3f",
+            "TaxGuidance",
+            len(docs),
+            len(data_to_insert),
+            "batch" if ENABLE_BATCH_GRAPH_UPSERT else "sequential",
+            elapsed,
+        )
 
     except Exception as exc:
-        logger.warning("upsert_bofip_node failed (non-fatal): %s", exc)
-
+        logger.error(
+            "Graph upsert stage failed: label=%s rows=%s error=%s",
+            "TaxGuidance",
+            len(data_to_insert),
+            exc,
+        )
