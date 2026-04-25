@@ -284,18 +284,23 @@ def _process_dila_xml_content(
             status = root.find(".//ETAT").text
             cid = root.find(".//ID").text  # doc_id
             nature = root.find(".//NATURE").text
-            title = (
+            
+            title = None
+            subtitles = []
+            for elem in root.find(".//CONTEXTE//TEXTE").iter("TITRE_TM"):
+                subtitles.append(elem.text)
+                title = elem.text  # Keep updating title with the last subtitle found, which is the most specific one
+            subtitles = " - ".join(subtitles)
+            if not subtitles:
+                subtitles = None
+            maintitle = (
                 root.find(".//CONTEXTE//TEXTE//TITRE_TXT")
                 .get("c_titre_court")
                 .strip(".")
             )
-          
-            subtitles = []
-            for elem in root.find(".//CONTEXTE//TEXTE").iter("TITRE_TM"):
-                subtitles.append(elem.text)
-            subtitles = " - ".join(subtitles)
-            if not subtitles:
-                subtitles = None
+            title = title.strip(".") if title else maintitle 
+            full_title = root.find(".//TITRE_TXT").text+((" "+subtitles) if subtitles else "")
+
             number = root.find(".//NUM").text
 
             start_date = datetime.strptime(
@@ -304,7 +309,6 @@ def _process_dila_xml_content(
             end_date = datetime.strptime(
                 root.find(".//DATE_FIN").text, "%Y-%m-%d"
             ).strftime("%Y-%m-%d")
-            full_title = root.find(".//TITRE_TXT").text
 
             nota = []
             contenu_nota = root.find(".//NOTA//CONTENU")

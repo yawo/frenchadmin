@@ -219,7 +219,7 @@ def upsert_legi_node(data_to_insert: list):
                     links = []
                 for link in links:
                     target_doc_id = link.get("doc_id") or link.get("text_doc_id")
-                    if target_doc_id:
+                    if target_doc_id and target_doc_id not in target_doc_ids:
                         target_doc_ids.add(target_doc_id)
 
             # Single document query: node upsert + optional relations + references.
