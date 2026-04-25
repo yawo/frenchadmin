@@ -90,6 +90,80 @@ def close_connection_pool():
 atexit.register(close_connection_pool)
 
 
+def _table_exists(cursor, table_name: str) -> bool:
+    cursor.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_name = %s
+        );
+    """,
+        (table_name.lower(),),
+    )
+    return bool(cursor.fetchone()[0])
+
+
+def _column_exists(cursor, table_name: str, column_name: str) -> bool:
+    cursor.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = %s AND column_name = %s
+        );
+    """,
+        (table_name.lower(), column_name),
+    )
+    return bool(cursor.fetchone()[0])
+
+
+def _ensure_embedding_vector_column(
+    cursor,
+    table_name: str,
+    model_name: str,
+    embedding_size: int,
+):
+    column_name = f"embeddings_{model_name}"
+    if _column_exists(cursor, table_name, column_name):
+        return
+    cursor.execute(
+        f'ALTER TABLE {table_name.upper()} ADD COLUMN "embeddings_{model_name}" vector({embedding_size});'
+    )
+    logger.info(
+        "Added missing embedding column '%s' to %s",
+        column_name,
+        table_name.upper(),
+    )
+
+
+def _ensure_hnsw_index(cursor, table_name: str, model_name: str):
+    cursor.execute(
+        """
+        SELECT indexname FROM pg_indexes
+        WHERE tablename = %s AND indexdef LIKE %s;
+    """,
+        (table_name.lower(), f'%embeddings_{model_name}%'),
+    )
+    if cursor.fetchone():
+        return
+    cursor.execute(
+        f'CREATE INDEX ON {table_name.upper()} USING hnsw ("embeddings_{model_name}" vector_cosine_ops) WITH (m = 16, ef_construction = 128);'
+    )
+    logger.info(
+        "Created missing HNSW index on %s for embeddings_%s",
+        table_name.upper(),
+        model_name,
+    )
+
+
+def _ensure_doc_id_index(cursor, table_name: str):
+    index_name = f"idx_{table_name.lower()}_doc_id"
+    cursor.execute(
+        f"CREATE INDEX IF NOT EXISTS {index_name} ON {table_name.upper()}(doc_id);"
+    )
+
+
 def create_all_tables(model=EMBEDDING_MODEL, delete_existing: bool = False):
     """
     Creates the necessary tables in the PostgreSQL database as specified in the data configuration file.
@@ -160,143 +234,104 @@ def create_all_tables(model=EMBEDDING_MODEL, delete_existing: bool = False):
                     f"Table '{table_name.upper()}' dropped successfully in database {POSTGRES_DB}"
                 )
 
-            cursor.execute(f"""
-                SELECT EXISTS (
-                    SELECT 1
-                    FROM information_schema.tables
-                    WHERE table_name = '{table_name.lower()}'
-                );
-            """)
-            table_exists = cursor.fetchone()[0]
-
+            table_exists = _table_exists(cursor, table_name)
             if table_exists:
                 logger.info(
                     f"Table '{table_name.upper()}' already exists in database {POSTGRES_DB}"
                 )
-                if table_name.lower() not in config_tables:
-                    index_name = f"idx_{table_name.lower()}_doc_id"
-                    cursor.execute(f"""
-                        SELECT EXISTS (
-                            SELECT 1 FROM pg_indexes
-                            WHERE tablename = '{table_name.lower()}'
-                            AND indexname = '{index_name}'
-                        );
-                    """)
-                    if not cursor.fetchone()[0]:
-                        cursor.execute(f"""
-                            CREATE INDEX IF NOT EXISTS {index_name}
-                            ON {table_name.upper()}(doc_id);
-                        """)
-                        conn.commit()
-                        logger.info(f"Index {index_name} created successfully")
-                continue
 
             if table_name.lower() == "legi":
-                cursor.execute(f"""
-                    CREATE TABLE LEGI (
-                        chunk_id TEXT PRIMARY KEY,
-                        doc_id TEXT NOT NULL,
-                        chunk_index INTEGER NOT NULL,
-                        chunk_xxh64 TEXT NOT NULL,
-                        nature TEXT,
-                        category TEXT,
-                        ministry TEXT,
-                        status TEXT,
-                        title TEXT,
-                        full_title TEXT,
-                        subtitles TEXT,
-                        number TEXT,
-                        start_date TEXT,
-                        end_date TEXT,
-                        nota TEXT,
-                        links JSONB,
-                        text TEXT,
-                        chunk_text TEXT,
-                        "embeddings_{model_name}" vector({embedding_size}),
-                        UNIQUE(chunk_id)
-                    )
-                """)
+                if not table_exists:
+                    cursor.execute(f"""
+                        CREATE TABLE LEGI (
+                            chunk_id TEXT PRIMARY KEY,
+                            doc_id TEXT NOT NULL,
+                            chunk_index INTEGER NOT NULL,
+                            chunk_xxh64 TEXT NOT NULL,
+                            nature TEXT,
+                            category TEXT,
+                            ministry TEXT,
+                            status TEXT,
+                            title TEXT,
+                            full_title TEXT,
+                            subtitles TEXT,
+                            number TEXT,
+                            start_date TEXT,
+                            end_date TEXT,
+                            nota TEXT,
+                            links JSONB,
+                            text TEXT,
+                            chunk_text TEXT,
+                            "embeddings_{model_name}" vector({embedding_size}),
+                            UNIQUE(chunk_id)
+                        )
+                    """)
             elif table_name.lower() == "jade":
-                cursor.execute(f"""
-                    CREATE TABLE JADE (
-                        chunk_id TEXT PRIMARY KEY,
-                        doc_id TEXT NOT NULL,
-                        chunk_index INTEGER NOT NULL,
-                        chunk_xxh64 TEXT NOT NULL,
-                        nature TEXT,
-                        solution TEXT,
-                        title TEXT,
-                        number TEXT,
-                        decision_date TEXT,
-                        jurisdiction TEXT,
-                        formation TEXT,
-                        text TEXT,
-                        chunk_text TEXT,
-                        "embeddings_{model_name}" vector({embedding_size}),
-                        UNIQUE(chunk_id)
-                    )
-                """)
+                if not table_exists:
+                    cursor.execute(f"""
+                        CREATE TABLE JADE (
+                            chunk_id TEXT PRIMARY KEY,
+                            doc_id TEXT NOT NULL,
+                            chunk_index INTEGER NOT NULL,
+                            chunk_xxh64 TEXT NOT NULL,
+                            nature TEXT,
+                            solution TEXT,
+                            title TEXT,
+                            number TEXT,
+                            decision_date TEXT,
+                            jurisdiction TEXT,
+                            formation TEXT,
+                            text TEXT,
+                            chunk_text TEXT,
+                            "embeddings_{model_name}" vector({embedding_size}),
+                            UNIQUE(chunk_id)
+                        )
+                    """)
             elif table_name.lower() == "bofip":
-                cursor.execute(f"""
-                    CREATE TABLE BOFIP (
-                        chunk_id TEXT PRIMARY KEY,
-                        doc_id TEXT NOT NULL,
-                        chunk_index INTEGER NOT NULL,
-                        chunk_xxh64 TEXT NOT NULL,
-                        title TEXT,
-                        contenu_id TEXT,
-                        contenu_type TEXT,
-                        document_number TEXT,
-                        bofip_url TEXT,
-                        publication_date TEXT,
-                        subjects TEXT[],
-                        category_path TEXT,
-                        links JSONB,
-                        text TEXT,
-                        chunk_text TEXT,
-                        "embeddings_{model_name}" vector({embedding_size}),
-                        UNIQUE(chunk_id)
-                    )
-                """)
+                if not table_exists:
+                    cursor.execute(f"""
+                        CREATE TABLE BOFIP (
+                            chunk_id TEXT PRIMARY KEY,
+                            doc_id TEXT NOT NULL,
+                            chunk_index INTEGER NOT NULL,
+                            chunk_xxh64 TEXT NOT NULL,
+                            title TEXT,
+                            contenu_id TEXT,
+                            contenu_type TEXT,
+                            document_number TEXT,
+                            bofip_url TEXT,
+                            publication_date TEXT,
+                            subjects TEXT[],
+                            category_path TEXT,
+                            links JSONB,
+                            text TEXT,
+                            chunk_text TEXT,
+                            "embeddings_{model_name}" vector({embedding_size}),
+                            UNIQUE(chunk_id)
+                        )
+                    """)
             elif table_name.lower() == "table_mapping":
-                cursor.execute("""
-                    CREATE TABLE TABLE_MAPPING (
-                        table_name VARCHAR(63) PRIMARY KEY,
-                        full_table_name VARCHAR NOT NULL
-                    )
-                """)
-
-            try:
-                if table_name.lower() not in config_tables:
-                    cursor.execute(f"""
-                        CREATE INDEX ON {table_name.upper()} USING hnsw ("embeddings_{model_name}" vector_cosine_ops)
-                        WITH (m = 16, ef_construction = 128);
+                if not table_exists:
+                    cursor.execute("""
+                        CREATE TABLE TABLE_MAPPING (
+                            table_name VARCHAR(63) PRIMARY KEY,
+                            full_table_name VARCHAR NOT NULL
+                        )
                     """)
-                    logger.debug(f"HNSW index created on {table_name.upper()}")
-            except Exception as e:
-                logger.error(
-                    f"Error creating HNSW index on {table_name.upper()} table: {e}"
-                )
-                raise e
 
-            try:
-                if table_name.lower() not in config_tables:
-                    cursor.execute(f"""
-                        CREATE INDEX idx_{table_name.lower()}_doc_id
-                        ON {table_name.upper()}(doc_id);
-                    """)
-                    logger.debug(
-                        f"B-tree index on doc_id created for {table_name.upper()}"
-                    )
-            except Exception as e:
-                logger.error(
-                    f"Error creating doc_id index on {table_name.upper()} table: {e}"
+            if table_name.lower() not in config_tables:
+                _ensure_embedding_vector_column(
+                    cursor,
+                    table_name,
+                    model_name,
+                    embedding_size,
                 )
-                raise e
+                _ensure_hnsw_index(cursor, table_name, model_name)
+                _ensure_doc_id_index(cursor, table_name)
 
             conn.commit()
             logger.info(
-                f"Table '{table_name.upper()}' created successfully in database {POSTGRES_DB} with indexes"
+                f"Table '{table_name.upper()}' ensured successfully in database {POSTGRES_DB}"
             )
 
             update_mapping_table(

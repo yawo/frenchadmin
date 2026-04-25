@@ -1,8 +1,12 @@
 from .checkpoint_manager import CheckpointManager
 from .chunking_and_embedding import (
     embed_texts_with_retry,
+    format_text_for_embedding,
     generate_embeddings,
     generate_embeddings_with_retry,
+    get_nonfinite_fallback_model,
+    get_recommended_chunk_overlap,
+    get_recommended_chunk_size,
     make_chunks,
 )
 from .data_helpers import (

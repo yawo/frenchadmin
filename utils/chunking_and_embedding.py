@@ -15,7 +15,9 @@ from config import (
     CHUNK_MIN_FILL_RATIO,
     CHUNK_SIZE,
     EMBEDDING_ENCODE_BATCH_SIZE,
+    EMBEDDING_MAX_INPUT_TOKENS,
     EMBEDDING_MODEL,
+    EMBEDDING_NONFINITE_FALLBACK_MODEL,
     EMBEDDING_BATCH_MAX_SIZE,
     EMBEDDING_RETRY_ATTEMPTS,
     JADE_DATA_FOLDER,
@@ -27,10 +29,42 @@ logger = get_logger(__name__)
 
 _tokenizer_cache = {}  # Cache of loaded tokenizers keyed by model name
 _embedding_model_cache = {}  # Cache of SentenceTransformer models keyed by (model, device_key)
+_MODEL_TOKEN_LIMIT_OVERRIDES = {
+    "BAAI/bge-m3": 8192,
+    "intfloat/multilingual-e5-large-instruct": 512,
+    "louisbrulenaudet/lemone-embed-l": 512,
+    "louisbrulenaudet/lemone-embed-l-boost": 512,
+    "louisbrulenaudet/lemone-embed-m": 512,
+    "louisbrulenaudet/lemone-embed-m-boost": 512,
+    "louisbrulenaudet/lemone-embed-pro": 8192,
+    "maastrichtlawtech/camembert-base-lleqa": 512,
+}
+_DEFAULT_NONFINITE_FALLBACK_MODELS = {
+    "louisbrulenaudet/lemone-embed-pro": "louisbrulenaudet/lemone-embed-m-boost",
+}
+_PASSAGE_PREFIX_MODELS = {
+    "louisbrulenaudet/lemone-embed-l",
+    "louisbrulenaudet/lemone-embed-l-boost",
+    "louisbrulenaudet/lemone-embed-m",
+    "louisbrulenaudet/lemone-embed-m-boost",
+}
+_TOKENIZER_SENTINEL_LIMIT = 100_000
+_MIN_CHUNK_SIZE_TOKENS = 128
+_DEFAULT_CHUNK_HEADROOM = 48
 
 
 class NonFiniteEmbeddingError(Exception):
     """Raised when an embedding contains NaN or infinite values."""
+
+
+def _get_tokenizer(model_name: str):
+    model_key = "BAAI/bge-m3" if model_name == "bge_m3_tokenizer" else model_name
+    if model_key not in _tokenizer_cache:
+        _tokenizer_cache[model_key] = AutoTokenizer.from_pretrained(
+            model_key,
+            trust_remote_code=True,
+        )
+    return _tokenizer_cache[model_key]
 
 
 def _is_cuda_oom_error(error: Exception) -> bool:
@@ -149,13 +183,114 @@ def _get_embedding_model(
         )
         if device and device.lower() == "cpu":
             embedding_model = SentenceTransformer(
-                model, trust_remote_code=True, device="cpu"
+                model,
+                trust_remote_code=True,
+                device="cpu",
+                model_kwargs={"torch_dtype": torch.float32},
             )
         else:
-            embedding_model = SentenceTransformer(model, trust_remote_code=True)
+            embedding_model = SentenceTransformer(
+                model,
+                trust_remote_code=True,
+                model_kwargs={"torch_dtype": torch.float32},
+            )
         _repair_lemone_position_ids(embedding_model=embedding_model, model_name=model)
         _embedding_model_cache[cache_key] = embedding_model
     return _embedding_model_cache[cache_key]
+
+
+def get_embedding_model_token_limit(model: str = EMBEDDING_MODEL) -> int:
+    """Return a conservative token limit for the embedding model."""
+    if model in _MODEL_TOKEN_LIMIT_OVERRIDES:
+        return _MODEL_TOKEN_LIMIT_OVERRIDES[model]
+
+    try:
+        tokenizer = _get_tokenizer(model)
+    except Exception:
+        return EMBEDDING_MAX_INPUT_TOKENS
+
+    model_limit = getattr(tokenizer, "model_max_length", None)
+    if isinstance(model_limit, int) and 0 < model_limit < _TOKENIZER_SENTINEL_LIMIT:
+        return model_limit
+    return EMBEDDING_MAX_INPUT_TOKENS
+
+
+def get_recommended_chunk_size(model: str = EMBEDDING_MODEL) -> int:
+    """Keep chunks within the active model context window, with small headroom."""
+    model_limit = min(EMBEDDING_MAX_INPUT_TOKENS, get_embedding_model_token_limit(model))
+    if model_limit <= 0:
+        return CHUNK_SIZE
+    return max(
+        _MIN_CHUNK_SIZE_TOKENS,
+        min(CHUNK_SIZE, model_limit - _DEFAULT_CHUNK_HEADROOM),
+    )
+
+
+def get_recommended_chunk_overlap(
+    model: str = EMBEDDING_MODEL,
+    chunk_size: int | None = None,
+) -> int:
+    """Clamp overlap so shorter-context models still chunk safely."""
+    effective_chunk_size = chunk_size or get_recommended_chunk_size(model)
+    if effective_chunk_size <= 1:
+        return 0
+    return min(CHUNK_OVERLAP, max(0, effective_chunk_size // 5), effective_chunk_size - 1)
+
+
+def get_nonfinite_fallback_model(model: str = EMBEDDING_MODEL) -> str:
+    """Pick the configured fallback model, or a safe built-in default."""
+    if EMBEDDING_NONFINITE_FALLBACK_MODEL and EMBEDDING_NONFINITE_FALLBACK_MODEL != model:
+        return EMBEDDING_NONFINITE_FALLBACK_MODEL
+    return _DEFAULT_NONFINITE_FALLBACK_MODELS.get(model, "")
+
+
+def format_text_for_embedding(
+    text: str,
+    model: str = EMBEDDING_MODEL,
+    input_type: str | None = None,
+) -> str:
+    """Apply model-specific formatting expected during retrieval training."""
+    if not text:
+        return text
+
+    normalized_text = text.strip()
+    if not normalized_text:
+        return normalized_text
+
+    if input_type == "document":
+        lowered_model = model.lower()
+        needs_passage_prefix = (
+            model in _PASSAGE_PREFIX_MODELS
+            or "multilingual-e5" in lowered_model
+        )
+        if needs_passage_prefix and not normalized_text.lower().startswith("passage:"):
+            return f"passage: {normalized_text}"
+
+    return normalized_text
+
+
+def _truncate_text_to_model_limit(
+    text: str,
+    model: str,
+    max_tokens: int = EMBEDDING_MAX_INPUT_TOKENS,
+) -> str:
+    """Trim text to token cap before embedding to avoid unstable long sequences."""
+    effective_max_tokens = min(max_tokens, get_embedding_model_token_limit(model))
+    if not text or effective_max_tokens <= 0:
+        return text
+
+    tokenizer = _get_tokenizer(model)
+    token_ids = tokenizer.encode(text, add_special_tokens=False)
+    if len(token_ids) <= effective_max_tokens:
+        return text
+
+    logger.warning(
+        "Truncating text for embedding: tokens=%s cap=%s model=%s",
+        len(token_ids),
+        effective_max_tokens,
+        model,
+    )
+    return tokenizer.decode(token_ids[:effective_max_tokens], skip_special_tokens=True)
 
 
 def generate_embeddings(
@@ -163,6 +298,7 @@ def generate_embeddings(
     model: str = EMBEDDING_MODEL,
     batch_size: int | None = None,
     device: str | None = None,
+    input_type: str | None = None,
 ) -> list[float]:
     """
     Generates embeddings for a given text using a HuggingFace model downloaded locally.
@@ -176,6 +312,12 @@ def generate_embeddings(
     """
     if isinstance(data, str):
         data = [data]
+    if input_type:
+        data = [
+            format_text_for_embedding(text=item, model=model, input_type=input_type)
+            for item in data
+        ]
+    data = [_truncate_text_to_model_limit(text=item, model=model) for item in data]
     embedding_model = _get_embedding_model(model=model, device=device)
     effective_batch_size = max(1, batch_size or EMBEDDING_ENCODE_BATCH_SIZE)
     vectors = embedding_model.encode(
@@ -192,6 +334,7 @@ def generate_embeddings_with_retry(
     attempts: int = 5,
     model: str = EMBEDDING_MODEL,
     time_sleep: int = 60,
+    input_type: str | None = None,
 ) -> list[float]:
     """
     Generate embeddings for the provided data with retry mechanism.
@@ -215,7 +358,7 @@ def generate_embeddings_with_retry(
 
     for attempt in range(attempts):  # Retry embedding up to {attempts} times
         try:
-            embeddings = generate_embeddings(data=data, model=model)
+            embeddings = generate_embeddings(data=data, model=model, input_type=input_type)
             if _has_non_finite_embeddings(embeddings):
                 raise NonFiniteEmbeddingError(
                     "Generated embedding contains non-finite values (NaN/Inf)."
@@ -228,11 +371,61 @@ def generate_embeddings_with_retry(
                 _release_cuda_memory()
             if is_non_finite:
                 logger.warning(
-                    "Non-finite embeddings detected for batch. Resetting model cache and retrying."
+                    "Non-finite embeddings detected for batch. Resetting model cache and trying fallbacks."
                 )
                 _reset_embedding_model(model)
+                cpu_embeddings = None
+                try:
+                    cpu_embeddings = generate_embeddings(
+                        data=data,
+                        model=model,
+                        batch_size=1,
+                        device="cpu",
+                        input_type=input_type,
+                    )
+                    if _has_non_finite_embeddings(cpu_embeddings):
+                        raise NonFiniteEmbeddingError(
+                            "CPU fallback produced non-finite embeddings."
+                        )
+                    return cpu_embeddings
+                except Exception as cpu_error:
+                    fallback_model = get_nonfinite_fallback_model(model)
+                    if fallback_model and fallback_model != model:
+                        logger.warning(
+                            "Primary model produced non-finite embeddings. Trying fallback model '%s'.",
+                            fallback_model,
+                        )
+                        fallback_embeddings = generate_embeddings(
+                            data=data,
+                            model=fallback_model,
+                            batch_size=1,
+                            device="cpu",
+                            input_type=input_type,
+                        )
+                        if _has_non_finite_embeddings(fallback_embeddings):
+                            raise NonFiniteEmbeddingError(
+                                f"Fallback model '{fallback_model}' produced non-finite embeddings."
+                            )
+                        if cpu_embeddings and fallback_embeddings:
+                            expected_dim = len(cpu_embeddings[0])
+                            actual_dim = len(fallback_embeddings[0])
+                            if expected_dim != actual_dim:
+                                raise ValueError(
+                                    f"Fallback embedding dimension mismatch: expected {expected_dim}, got {actual_dim}."
+                                )
+                        logger.warning(
+                            "Using fallback embedding model '%s' for current batch.",
+                            fallback_model,
+                        )
+                        return fallback_embeddings
+                    logger.error(
+                        "Error generating embeddings for : %s ... non-finite recovery failed: %s",
+                        str(data)[:200],
+                        cpu_error,
+                    )
+                    raise cpu_error
             if attempt == attempts - 1:  # If this is the last attempt
-                if is_cuda_oom or is_non_finite:
+                if is_cuda_oom:
                     logger.warning(
                         "Embedding generation unstable after %s attempts. Falling back to CPU for this batch.",
                         attempts,
@@ -243,6 +436,7 @@ def generate_embeddings_with_retry(
                             model=model,
                             batch_size=1,
                             device="cpu",
+                            input_type=input_type,
                         )
                         if _has_non_finite_embeddings(cpu_embeddings):
                             raise NonFiniteEmbeddingError(
@@ -274,6 +468,7 @@ def embed_texts_with_retry(
     max_batch_size: int = EMBEDDING_BATCH_MAX_SIZE,
     split_on_failure: bool = True,
     retry_observer=None,
+    input_type: str | None = None,
 ) -> list[list[float]]:
     """Generate embeddings for many texts using bounded batches and split fallback.
 
@@ -289,6 +484,7 @@ def embed_texts_with_retry(
                 data=batch_texts,
                 attempts=attempts,
                 model=model,
+                input_type=input_type,
             )
         except Exception:
             if retry_observer is not None:
@@ -331,11 +527,7 @@ def _get_length_function(length_function: str):
     if length_function == "len":
         return len
 
-    # "bge_m3_tokenizer" is kept for backwards compatibility
-    model_name = "BAAI/bge-m3" if length_function == "bge_m3_tokenizer" else length_function
-    if model_name not in _tokenizer_cache:
-        _tokenizer_cache[model_name] = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    tokenizer = _tokenizer_cache[model_name]
+    tokenizer = _get_tokenizer(length_function)
     return lambda text: len(tokenizer.encode(text))
 
 

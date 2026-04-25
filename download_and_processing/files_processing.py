@@ -35,6 +35,8 @@ from utils import (
     embed_texts_with_retry,
     format_subtitles,
     generate_embeddings_with_retry,
+    get_recommended_chunk_overlap,
+    get_recommended_chunk_size,
     load_config,
     make_chunks,
     PerfTelemetry,
@@ -72,6 +74,7 @@ def _embed_texts(
             max_batch_size=EMBEDDING_BATCH_MAX_SIZE,
             split_on_failure=True,
             retry_observer=(telemetry.add_retry if telemetry else None),
+            input_type="document",
         )
     embeddings = []
     for chunk_text in chunk_texts:
@@ -80,6 +83,7 @@ def _embed_texts(
                 data=chunk_text,
                 attempts=EMBEDDING_RETRY_ATTEMPTS,
                 model=model,
+                input_type="document",
             )[0]
         )
     return embeddings
@@ -355,7 +359,13 @@ def _process_dila_xml_content(
 
             data_to_insert = []
             with _telemetry_stage(telemetry, "chunking"):
-                chunks = make_chunks(text=text_content)
+                chunk_size = get_recommended_chunk_size(model)
+                chunks = make_chunks(
+                    text=text_content,
+                    chunk_size=chunk_size,
+                    chunk_overlap=get_recommended_chunk_overlap(model, chunk_size),
+                    length_function=model,
+                )
             chunk_rows = []
             chunk_texts = []
             for k, text in enumerate(chunks):
@@ -485,7 +495,13 @@ def _process_dila_xml_content(
             text_content = "\n".join(text_content)
             data_to_insert = []
             with _telemetry_stage(telemetry, "chunking"):
-                chunks = make_chunks(text=text_content)
+                chunk_size = get_recommended_chunk_size(model)
+                chunks = make_chunks(
+                    text=text_content,
+                    chunk_size=chunk_size,
+                    chunk_overlap=get_recommended_chunk_overlap(model, chunk_size),
+                    length_function=model,
+                )
             chunk_rows = []
             chunk_texts = []
             for k, text in enumerate(chunks):
@@ -1010,7 +1026,13 @@ def _process_bofip_document(
     text_content = "\n".join(lines)
     data_to_insert = []
     with _telemetry_stage(telemetry, "chunking"):
-        chunks = make_chunks(text=text_content)
+        chunk_size = get_recommended_chunk_size(model)
+        chunks = make_chunks(
+            text=text_content,
+            chunk_size=chunk_size,
+            chunk_overlap=get_recommended_chunk_overlap(model, chunk_size),
+            length_function=model,
+        )
     row_payload = []
     chunk_texts = []
     for k, text in enumerate(chunks):

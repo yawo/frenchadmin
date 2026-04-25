@@ -153,7 +153,7 @@ def main():
             model = args["--model"] if args["--model"] else EMBEDDING_MODEL
             if args["--all"]:
                 folder = args["--folder"] or os.path.join(BASE_PATH, "data/unprocessed")
-                logger.info(f"Processing all unprocessed data from folder: {folder}")
+                logger.info(f"Processing all unprocessed data from folder: {folder}, with model {model} (EMBEDDING_MODEL={EMBEDDING_MODEL})")
                 process_all_data(model=model)
             else:
                 source = args["--source"]

@@ -78,7 +78,7 @@ API_KEY = os.getenv("API_KEY", "your_api_key_here")
 LLM_MODEL = os.getenv("LLM_MODEL", "openrouter/hunter-alpha")
 
 # Embedding model configuration (downloaded and run locally via HuggingFace)
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "louisbrulenaudet/lemone-embed-pro")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
 
 # Hugging Face configuration
 HF_TOKEN = os.getenv("HF_TOKEN", "your_hugging_face_token_here")
@@ -103,6 +103,11 @@ ENABLE_PERF_TELEMETRY = _get_env_bool("ENABLE_PERF_TELEMETRY", True)
 EMBEDDING_BATCH_MAX_SIZE = int(os.getenv("EMBEDDING_BATCH_MAX_SIZE", "64"))
 EMBEDDING_RETRY_ATTEMPTS = int(os.getenv("EMBEDDING_RETRY_ATTEMPTS", "5"))
 EMBEDDING_ENCODE_BATCH_SIZE = int(os.getenv("EMBEDDING_ENCODE_BATCH_SIZE", "8"))
+EMBEDDING_MAX_INPUT_TOKENS = int(os.getenv("EMBEDDING_MAX_INPUT_TOKENS", "7800"))
+EMBEDDING_NONFINITE_FALLBACK_MODEL = os.getenv(
+    "EMBEDDING_NONFINITE_FALLBACK_MODEL",
+    "",
+)
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "7500"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "500"))
 CHUNK_MIN_FILL_RATIO = float(os.getenv("CHUNK_MIN_FILL_RATIO", "0.70"))
