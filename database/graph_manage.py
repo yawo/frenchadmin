@@ -553,7 +553,7 @@ def upsert_bofip_node(data_to_insert: list):
         for doc_id, rows in docs.items():
             first = rows[0]
             subjects = first[10]
-            subjects_str = ", ".join(subjects) if subjects else ""
+            subjects_str = "_".join(subjects) if subjects else ""
             chunk_ids = [row[0] for row in rows if row[0]]
             chunk_indexes = [row[2] for row in rows if row[2] is not None]
             chunk_texts = [row[14] or "" for row in rows]

@@ -962,7 +962,7 @@ def _process_bofip_document(
         if el.text and el.text not in seen:
             seen.add(el.text)
             subjects.append(el.text)
-
+    subjects = sorted(subjects) if subjects else None
     # dc:relation contains internal links/references to other BOFiP documents.
     # Each element has a "type" attribute (e.g. "references", "isReferencedBy",
     # "requires", "isRequiredBy") and a text value structured as:
@@ -1021,7 +1021,7 @@ def _process_bofip_document(
         if contenu_type:
             chunk_text_parts.append(f"Type: {contenu_type}")
         if subjects:
-            chunk_text_parts.append(f"Domaine: {', '.join(subjects)}")
+            chunk_text_parts.append(f"Domaine: {'_'.join(subjects)}")
         if category_path:
             chunk_text_parts.append(f"Chemin: {category_path}")
         if publication_date:
