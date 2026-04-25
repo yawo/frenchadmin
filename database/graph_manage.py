@@ -570,7 +570,7 @@ def upsert_bofip_node(data_to_insert: list):
                     if link.get("type") != "references":
                         continue
                     target_id = link.get("id")
-                    if target_id:
+                    if target_id and target_id not in target_ids:
                         target_ids.add(target_id)
 
             params = {
@@ -581,8 +581,7 @@ def upsert_bofip_node(data_to_insert: list):
                 "bofip_url": first[8] or "",
                 "date": first[9] or "",
                 "subjects": subjects_str,
-                # category_path is the existing BOFIP taxonomy field
-                "category": first[11] or "",
+                "category": subjects_str or "",
                 "chunk_ids": chunk_ids,
                 "chunk_indexes": chunk_indexes,
                 "chunk_count": len(rows),
@@ -610,8 +609,8 @@ def upsert_bofip_node(data_to_insert: list):
                         d.full_text        = $full_text,
                         d.embeddings       = $embeddings
 
-                    FOREACH (_ IN CASE WHEN $category_path <> '' THEN [1] ELSE [] END |
-                        MERGE (code:TaxCode {name: $category_path})
+                    FOREACH (_ IN CASE WHEN $category <> '' THEN [1] ELSE [] END |
+                        MERGE (code:TaxCode {name: $category})
                         MERGE (d)-[:BELONGS_TO_CODE]->(code)
                     )
 
@@ -642,7 +641,7 @@ def upsert_bofip_node(data_to_insert: list):
                     """,
                     params,
                 )
-                if params["category_path"]:
+                if params["category"]:
                     _safe_query(
                         """
                         MERGE (code:TaxCode {name: $name})
@@ -650,7 +649,7 @@ def upsert_bofip_node(data_to_insert: list):
                         MATCH (d:TaxGuidance {doc_id: $doc_id})
                         MERGE (d)-[:BELONGS_TO_CODE]->(code)
                         """,
-                        {"name": params["category_path"], "doc_id": doc_id},
+                        {"name": params["category"], "doc_id": doc_id},
                     )
                 for target_id in params["target_ids"]:
                     _safe_query(

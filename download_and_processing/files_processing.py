@@ -462,11 +462,17 @@ def _process_dila_xml_content(
             text_content = []
 
             # Use ana element if it exists and keep the id for more details, otherwise fallback to BLOC_TEXTUEL/CONTENU
-            ana_elem = root.find(".//ANA")
-            if ana_elem is not None:
-                text_content.append(ana_elem.text)
+            #there can multiple ANA elements, we will concatenate their text content if that's the case, as they often contain important analysis and summaries of the decision.
+            ana_elems = root.findall(".//ANA")
+            ana_elem_texts = []
+            for ana_elem in ana_elems:
+                if ana_elem is not None and ana_elem.text:
+                    ana_elem_texts.append(ana_elem.text.strip())
+            
+            if ana_elem_texts and len(ana_elem_texts) > 0:
+                text_content.append("\n".join(ana_elem_texts))
             else:
-                logger.warning(f"ANA element not found in file {file_name}. Text content may be incomplete.")
+                logger.warning(f"ANA elements not found in file {file_name}. Text content may be incomplete.")
                 contenu = root.find(".//BLOC_TEXTUEL//CONTENU")
                 if contenu is not None:
                     content = ET.tostring(contenu, encoding="unicode", method="xml")
@@ -965,30 +971,13 @@ def _process_bofip_document(
     links = []
     for el in xml_root.findall(f".//{DC}relation"):
         relation_type = el.get("type")
-        value = el.text.strip() if el.text else None
-        if not value:
+        value = el.text.strip().split(":")[1] if el.text else None # "Contenu:1953-PGP"
+        if not value or relation_type not in {"references", "isReferencedBy"}: # just keep "references" and "isReferencedBy" for now, as they are the most relevant for search and graph connections. We can consider "requires" and "isRequiredBy" later if needed.
             continue
-        nature = None
-        document_type = None
-        doc_ref_id = None
-        if "." in value and ":" in value:
-            # Format: <Nature>.<DocumentType>:<identifier>
-            # e.g. "Contenu.Autres annexes:1077-PGP"
-            # Use partition to split on the first "." and first ":"
-            before_dot, dot_found, after_dot = value.partition(".")
-            if dot_found:
-                doc_type_part, colon_found, identifier = after_dot.partition(":")
-                if colon_found:
-                    nature = before_dot
-                    document_type = doc_type_part
-                    doc_ref_id = identifier
         links.append(
             {
                 "type": relation_type,
-                "nature": nature,
-                "document_type": document_type,
-                "id": doc_ref_id,
-                "value": value,
+                "id": value,
             }
         )
 
@@ -996,12 +985,14 @@ def _process_bofip_document(
     contenu_type = xml_root.findtext(f".//{BOFIP_NS}contenu_type")
 
     # Canonical document ID: prefer contenu_id, then extract from URL, then fallback
-    if contenu_id:
-        doc_id = contenu_id
+    if document_number:
+        doc_id = document_number
+    elif bofip_url and "/bofip/" in bofip_url: #https://bofip.impots.gouv.fr/bofip/353-PGP.html/identifiant=BOI-TVA-CHAMP-30-30-50-10-20260225<
+        doc_id = bofip_url.split("/")[-2].split(".")[0]  # Extract "353-PGP" from the URL
     elif bofip_url and "identifiant=" in bofip_url:
         doc_id = bofip_url.split("identifiant=")[-1]
-    elif document_number:
-        doc_id = document_number
+    elif contenu_id:
+        doc_id = contenu_id
     else:
         doc_id = (
             file_path.replace("/document.xml", "").replace("\\", "/").replace("/", "_")

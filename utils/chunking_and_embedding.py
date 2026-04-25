@@ -1,4 +1,5 @@
 import gc
+import math
 import os
 import time
 from collections.abc import Callable
@@ -25,12 +26,37 @@ from config import (
 logger = get_logger(__name__)
 
 _tokenizer_cache = {}  # Cache of loaded tokenizers keyed by model name
-_embedding_model_cache = {}  # Cache of loaded SentenceTransformer models keyed by model name
+_embedding_model_cache = {}  # Cache of SentenceTransformer models keyed by (model, device_key)
+
+
+class NonFiniteEmbeddingError(Exception):
+    """Raised when an embedding contains NaN or infinite values."""
 
 
 def _is_cuda_oom_error(error: Exception) -> bool:
     message = str(error).lower()
     return "cuda out of memory" in message or "cuda error: out of memory" in message
+
+
+def _has_non_finite_embeddings(embeddings: list[list[float]]) -> bool:
+    for vector in embeddings:
+        if vector is None:
+            return True
+        for value in vector:
+            if not isinstance(value, (int, float)):
+                return True
+            if not math.isfinite(float(value)):
+                return True
+    return False
+
+
+def _reset_embedding_model(model: str):
+    """Drop cached model instance so next call reloads a fresh model."""
+    global _embedding_model_cache
+    keys_to_drop = [cache_key for cache_key in _embedding_model_cache if cache_key[0] == model]
+    for cache_key in keys_to_drop:
+        _embedding_model_cache.pop(cache_key, None)
+    _release_cuda_memory()
 
 
 def _release_cuda_memory():
@@ -68,19 +94,29 @@ def _repair_lemone_position_ids(
     ):
         return
 
+    position_ids = auto_model.embeddings.position_ids
     max_position_embeddings = int(auto_model.config.max_position_embeddings)
     sample_size = min(64, max_position_embeddings)
     expected_prefix = torch.arange(sample_size, dtype=torch.long)
-    current_prefix = (
-        auto_model.embeddings.position_ids[:sample_size].detach().to("cpu", torch.long)
-    )
+
+    # Models can store this buffer as [max_pos] or [1, max_pos].
+    if position_ids.dim() == 2:
+        current_prefix = position_ids[0, :sample_size].detach().to("cpu", torch.long)
+    else:
+        current_prefix = position_ids[:sample_size].detach().to("cpu", torch.long)
     needs_repair = not torch.equal(current_prefix, expected_prefix)
     if not needs_repair:
         return
 
+    repaired_position_ids = torch.arange(
+        max_position_embeddings, device=auto_model.device, dtype=torch.long
+    )
+    if position_ids.dim() == 2:
+        repaired_position_ids = repaired_position_ids.unsqueeze(0)
+
     auto_model.embeddings.register_buffer(
         "position_ids",
-        torch.arange(max_position_embeddings, device=auto_model.device, dtype=torch.long),
+        repaired_position_ids,
         persistent=False,
     )
     logger.warning(
@@ -89,7 +125,10 @@ def _repair_lemone_position_ids(
     )
 
 
-def _get_embedding_model(model: str = EMBEDDING_MODEL) -> SentenceTransformer:
+def _get_embedding_model(
+    model: str = EMBEDDING_MODEL,
+    device: str | None = None,
+) -> SentenceTransformer:
     """
     Returns a cached SentenceTransformer model, downloading it from HuggingFace if needed.
 
@@ -100,12 +139,23 @@ def _get_embedding_model(model: str = EMBEDDING_MODEL) -> SentenceTransformer:
         SentenceTransformer: The loaded embedding model.
     """
     global _embedding_model_cache
-    if model not in _embedding_model_cache:
-        logger.info(f"Loading embedding model '{model}' from HuggingFace...")
-        embedding_model = SentenceTransformer(model, trust_remote_code=True)
+    device_key = (device or "auto").lower()
+    cache_key = (model, device_key)
+    if cache_key not in _embedding_model_cache:
+        logger.info(
+            "Loading embedding model '%s' from HuggingFace (device=%s)...",
+            model,
+            device_key,
+        )
+        if device and device.lower() == "cpu":
+            embedding_model = SentenceTransformer(
+                model, trust_remote_code=True, device="cpu"
+            )
+        else:
+            embedding_model = SentenceTransformer(model, trust_remote_code=True)
         _repair_lemone_position_ids(embedding_model=embedding_model, model_name=model)
-        _embedding_model_cache[model] = embedding_model
-    return _embedding_model_cache[model]
+        _embedding_model_cache[cache_key] = embedding_model
+    return _embedding_model_cache[cache_key]
 
 
 def generate_embeddings(
@@ -126,7 +176,7 @@ def generate_embeddings(
     """
     if isinstance(data, str):
         data = [data]
-    embedding_model = _get_embedding_model(model)
+    embedding_model = _get_embedding_model(model=model, device=device)
     effective_batch_size = max(1, batch_size or EMBEDDING_ENCODE_BATCH_SIZE)
     vectors = embedding_model.encode(
         data,
@@ -166,27 +216,42 @@ def generate_embeddings_with_retry(
     for attempt in range(attempts):  # Retry embedding up to {attempts} times
         try:
             embeddings = generate_embeddings(data=data, model=model)
+            if _has_non_finite_embeddings(embeddings):
+                raise NonFiniteEmbeddingError(
+                    "Generated embedding contains non-finite values (NaN/Inf)."
+                )
             return embeddings
         except Exception as e:
             is_cuda_oom = _is_cuda_oom_error(e)
+            is_non_finite = isinstance(e, NonFiniteEmbeddingError)
             if is_cuda_oom:
                 _release_cuda_memory()
+            if is_non_finite:
+                logger.warning(
+                    "Non-finite embeddings detected for batch. Resetting model cache and retrying."
+                )
+                _reset_embedding_model(model)
             if attempt == attempts - 1:  # If this is the last attempt
-                if is_cuda_oom:
+                if is_cuda_oom or is_non_finite:
                     logger.warning(
-                        "CUDA OOM persisted after %s attempts. Falling back to CPU for this batch.",
+                        "Embedding generation unstable after %s attempts. Falling back to CPU for this batch.",
                         attempts,
                     )
                     try:
-                        return generate_embeddings(
+                        cpu_embeddings = generate_embeddings(
                             data=data,
                             model=model,
                             batch_size=1,
                             device="cpu",
                         )
+                        if _has_non_finite_embeddings(cpu_embeddings):
+                            raise NonFiniteEmbeddingError(
+                                "CPU fallback produced non-finite embeddings."
+                            )
+                        return cpu_embeddings
                     except Exception as cpu_error:
                         logger.error(
-                            "Error generating embeddings for : %s ... CUDA OOM persisted and CPU fallback failed: %s",
+                            "Error generating embeddings for : %s ... CPU fallback failed: %s",
                             str(data)[:200],
                             cpu_error,
                         )
@@ -195,7 +260,7 @@ def generate_embeddings_with_retry(
                     f"Error generating embeddings for : {str(data)[:200]} ... Error: {e}. Maximum retries reached ({attempts}). Raising exception."
                 )
                 raise
-            retry_sleep = min(time_sleep, 5) if is_cuda_oom else time_sleep
+            retry_sleep = min(time_sleep, 5) if (is_cuda_oom or is_non_finite) else time_sleep
             logger.error(
                 f"Error generating embeddings for : {str(data)[:200]} ... Error: {e}. Retrying in {retry_sleep} seconds (attempt {attempt + 1}/{attempts})"
             )

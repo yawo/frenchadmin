@@ -1069,10 +1069,21 @@ def export_table_to_parquet(
 
 
 def _sanitize_embedding(embedding):
-    """Replace NaN values in embedding vector with 0.0."""
+    """Validate embedding vector and reject non-finite values."""
     if embedding is None:
         return None
-    return [0.0 if math.isnan(v) else v for v in embedding]
+    sanitized = []
+    for value in embedding:
+        try:
+            float_value = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Invalid embedding value type: {type(value)}"
+            ) from exc
+        if not math.isfinite(float_value):
+            raise ValueError("Non-finite embedding value detected (NaN/Inf).")
+        sanitized.append(float_value)
+    return sanitized
 
 
 def _sanitize_row(row):
