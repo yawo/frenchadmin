@@ -1,27 +1,68 @@
-# Misc
-data/
-logs/
-backups/
-venv/*
-.venv/*
-*.log
-.env
+# Dependencies
+node_modules/
+venv/
+.venv/
 __pycache__/
+.mypy_cache/
+.pytest_cache/
+target/
+.gradle/
 
-# Configuration files
-config/data_history.json
+# Compiled/Binary files
+*.pyc
+*.class
+*.o
+*.exe
+*.dll
+*.so
+*.a
+*.obj
+*.out
+*.swp
+*.swo
 
-# Temporary and test files
-test.*
-test/
-nohup.out
-tmp/
+# Editor/IDE files
+.vscode/
+.idea/
+*.tmp
+
+# System/Environment files
+.DS_Store
+Thumbs.db
+.env
+.env.local
+*.env.*
+
+# Logs and coverage
+*.log
+coverage/
+htmlcov/
+.coverage
 
 # Build artifacts
-build/
 dist/
-*.egg-info/
+build/
 
-# Airflow
-airflow_config/config/*.cfg
-airflow_config/logs
+# Archives
+*.zip
+*.gz
+*.tar
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.zst
+*.lz4
+*.lzh
+*.cab
+*.arj
+*.rpm
+*.deb
+*.Z
+*.lz
+*.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
