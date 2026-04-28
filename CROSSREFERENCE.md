@@ -1,21 +1,4 @@
 # CROSSREFERENCE.md - JADE/BOFIP -> LEGI inference strategy
-
-Status: accepted working strategy
-
-Validated against:
-- code in `database/database_manage.py`
-- code in `download_and_processing/files_processing.py`
-- code in `database/graph_manage.py`
-- live PostgreSQL snapshot inspected on 2026-04-27
-
-This document replaces the previous CGI-only draft. The old draft had several wrong assumptions:
-- source tables are not document-level, they are chunk-level
-- `LEGI` is not only CGI articles
-- date columns are `TEXT`, not `DATE`
-- graph nodes use `doc_id`, not `id`
-- pgvector indexes are cosine, so semantic SQL must use `<=>`, not `<->`
-- `LEGI` article numbers are versioned over time, so temporal filtering is mandatory
-
 The goal is to infer article-level cross references from:
 - `JADE` case law
 - `BOFIP` doctrine
