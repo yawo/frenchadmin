@@ -1,0 +1,2 @@
+pour lancer la ligne de commande d'un conteneur docker (ex avec le conteneur airflow-scheduler)
+docker exec -it airflow-scheduler /bin/bash
