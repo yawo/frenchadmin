@@ -68,3 +68,8 @@ htmlcov/
 *.tar.bz2
 *.tar.xz
 *.tar.zst
+
+# data
+data/experimental/ 
+data/perf_reports/ 
+data/selected/     
