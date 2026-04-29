@@ -412,7 +412,6 @@ def _process_source_document(
                 source_type, doc_id, raw["source_chunk_id"],
                 raw["match_start"], raw["match_end"],
                 raw["matched_text"],
-                result["target_legi_doc_id"] or "",
             ),
             "source_type": source_type,
             "source_doc_id": doc_id,
@@ -506,7 +505,7 @@ def _is_in_vu_section(chunk_text: str, match_start: int) -> bool:
 
 def _compute_mention_hash(
     source_type, source_doc_id, source_chunk_id,
-    match_start, match_end, matched_text, target_legi_doc_id,
+    match_start, match_end, matched_text,
 ) -> str:
     """Hash identifies source mention location, not resolution outcome.
     
