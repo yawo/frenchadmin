@@ -765,7 +765,15 @@ def inject_cross_reference_edges(source_type: str, source_doc_id: str) -> bool:
                 params,
             )
             result_set = check.result_set
-            if not result_set or result_set[0][0] == 0 or result_set[0][1] == 0:
+            # Verify result_set has at least one row before indexing
+            if not result_set or len(result_set) == 0:
+                missing += 1
+                logger.warning(
+                    f"Cross-ref edge skipped: graph query returned no results "
+                    f"({source_label}:{src_doc} → LegalText:{target_id})"
+                )
+                continue
+            if result_set[0][0] == 0 or result_set[0][1] == 0:
                 missing += 1
                 logger.warning(
                     f"Cross-ref edge skipped: source or target node missing "

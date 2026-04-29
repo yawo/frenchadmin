@@ -7,6 +7,8 @@ Two-step extraction:
 
 import re
 
+from crossreference.normalizer import normalize_article_number
+
 # Single article token pattern
 # Supports: numeric, numeric-hyphen chains, L/R/D/A prefixes (including L.O.), *, spaced suffixes, ordinal suffixes
 ARTICLE_TOKEN_RE = re.compile(
@@ -91,6 +93,11 @@ def extract_article_mentions(text: str):
                         matched_raw = matched_raw[:-len(suffix)]
                         break
                 end = raw_start + len(matched_raw)
+                # After truncation, validate that remaining text is still a valid article
+                matched_normalized = normalize_article_number(matched_raw)
+                if not matched_normalized:
+                    # Truncation destroyed the article structure; skip this boundary case
+                    continue
 
             matched = matched_raw.strip()
             if matched:

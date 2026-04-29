@@ -162,12 +162,13 @@ def semantic_resolve(
         logger.debug("Semantic reject: null cosine_similarity score")
         return None
 
-    min_score = SEMANTIC_CODE_ALIASED_MIN if has_code_alias else SEMANTIC_MIN_SCORE
+    # With explicit code alias, trust lower scores; without, require higher confidence
+    min_score = SEMANTIC_MIN_SCORE if has_code_alias else SEMANTIC_CODE_ALIASED_MIN
 
     if score < min_score:
         logger.debug(
             f"Semantic reject: score {score:.3f} < {min_score} "
-            f"for context '{context_window[:80]}...'"
+            f"(alias_detected={has_code_alias}) for context '{context_window[:80]}...'"
         )
         return None
 

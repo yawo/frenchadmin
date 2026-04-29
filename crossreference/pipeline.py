@@ -401,10 +401,9 @@ def _process_source_document(
             semantic_similarity=semantic_similarity,
         )
 
-        # Semantic-only stricter acceptance
+        # Acceptance threshold: semantic-only mentions require standard threshold
+        # Confidence already includes no-alias penalty, so don't double-penalize in threshold
         acceptance_threshold = 0.70
-        if result["resolver_method"] == "semantic_scoped" and not detected_alias:
-            acceptance_threshold = 0.80
 
         is_accepted = confidence >= acceptance_threshold
 
@@ -509,6 +508,11 @@ def _compute_mention_hash(
     source_type, source_doc_id, source_chunk_id,
     match_start, match_end, matched_text, target_legi_doc_id,
 ) -> str:
+    """Hash identifies source mention location, not resolution outcome.
+    
+    Hashing only source-level attributes allows detection of mention deduplication
+    across resolution updates without creating duplicates on re-resolution.
+    """
     return hashlib.sha1(
         "|".join([
             source_type,
@@ -517,6 +521,5 @@ def _compute_mention_hash(
             str(match_start),
             str(match_end),
             matched_text,
-            target_legi_doc_id,
         ]).encode("utf-8")
     ).hexdigest()
