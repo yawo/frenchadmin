@@ -1,0 +1,36 @@
+{
+  "run_name": "process_jade",
+  "started_at": "2026-04-26T09:01:42.870285+00:00",
+  "ended_at": "2026-04-26T23:47:58.067060+00:00",
+  "total_wall_time_sec": 53175.19677419402,
+  "stage_seconds": {
+    "smart_preprocessing": 3.777211531996727e-05,
+    "parse": 411.40167032717727,
+    "chunking": 707.5610122662038,
+    "embedding": 43374.98348754342,
+    "postgres_insert": 927.8171989007387,
+    "graph_upsert": 430.4954424542375
+  },
+  "counters": {
+    "docs_processed": 60666,
+    "chunks_produced": 61550,
+    "rows_written": 61550
+  },
+  "errors": [],
+  "retries": 0,
+  "host": {
+    "hostname": "hotep",
+    "platform": "Linux-6.8.0-107-generic-x86_64-with-glibc2.39",
+    "python_version": "3.12.3"
+  },
+  "embedding_model": "BAAI/bge-m3",
+  "metadata": {
+    "table_name": "jade",
+    "streaming": true,
+    "parallel_processing": false,
+    "max_workers": 8,
+    "batch_size_docs": 16
+  },
+  "docs_per_sec": 1.1408702492933938,
+  "chunks_per_sec": 1.1574945413247681
+}

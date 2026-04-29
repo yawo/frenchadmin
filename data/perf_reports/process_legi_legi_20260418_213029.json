@@ -1,0 +1,38 @@
+{
+  "run_name": "process_legi",
+  "started_at": "2026-04-18T19:23:44.019603+00:00",
+  "ended_at": "2026-04-18T19:30:29.287727+00:00",
+  "total_wall_time_sec": 405.2681214980548,
+  "stage_seconds": {
+    "smart_preprocessing": 157.5214060760336,
+    "parse": 0.0012322439579293132,
+    "chunking": 2.331082712044008,
+    "embedding": 245.21377346105874
+  },
+  "counters": {
+    "retries": 1,
+    "errors": 1
+  },
+  "errors": [
+    {
+      "stage": "process_data",
+      "error": "CUDA error: device-side assert triggered\nSearch for `cudaErrorAssert' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.\nCUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.\nFor debugging consider passing CUDA_LAUNCH_BLOCKING=1\nCompile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.\n"
+    }
+  ],
+  "retries": 1,
+  "host": {
+    "hostname": "hotep",
+    "platform": "Linux-6.8.0-107-generic-x86_64-with-glibc2.39",
+    "python_version": "3.12.3"
+  },
+  "embedding_model": "louisbrulenaudet/lemone-embed-pro",
+  "metadata": {
+    "table_name": "legi",
+    "streaming": true,
+    "parallel_processing": false,
+    "max_workers": 8,
+    "batch_size_docs": 32
+  },
+  "docs_per_sec": 0.0,
+  "chunks_per_sec": 0.0
+}

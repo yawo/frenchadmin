@@ -10,6 +10,7 @@ Usage:
     main.py split_table (--table=<name>) [--debug]
     main.py export_table (--table=<name>) [--output=<path>] [--split] [--debug]
     main.py upload_dataset (--all | --dataset-name=<name>) [--input=<path>] [--repository=<name>] [--private] [--debug]
+    main.py infer_crossreferences (--source=<source>) [--model=<model_name>] [--debug]
     main.py -h | --help
 
 Commands:
@@ -20,12 +21,13 @@ Commands:
     split_table                 Split a table into multiple smaller tables based on source and criteria
     export_table                Export table to Parquet files
     upload_dataset              Upload dataset to Hugging Face
+    infer_crossreferences       Infer JADE/BOFIP -> LEGI cross-references
 
 Options:
     --delete-existing       Delete existing tables before creating new ones
     --all                   Select all data sources from the data configuration file
     --model=<model_name>    Embedding model name [default: louisbrulenaudet/lemone-embed-pro]. It is mandatory to specify the same model for all commands.
-    --source=<source>       Source to process (legi, jade, bofip)
+    --source=<source>       Source to process (legi, jade, bofip, all)
     --table=<name>          Table name to export or split (legi, jade, bofip)
     --folder=<path>         Folder containing unprocessed data
     --input=<path>          Input path of the dataset to upload
@@ -49,9 +51,12 @@ Examples:
     main.py export_table --table all --output data/parquet
     main.py upload_dataset --input data/parquet/bofip.parquet --dataset-name bofip --repository AgentPublic --private
     main.py upload_dataset --all --repository AgentPublic
+    main.py infer_crossreferences --source all --model louisbrulenaudet/lemone-embed-pro
+    main.py infer_crossreferences --source jade
 """
 
 import os
+import re
 import sys
 
 from docopt import docopt
@@ -74,6 +79,7 @@ from download_and_processing import (
     process_all_data,
     process_data,
 )
+from utils import format_model_name
 
 
 def main():
@@ -230,6 +236,36 @@ def main():
                     private=private,
                     local_folder_path=input_path,
                 )
+
+        # Infer cross-references
+        elif args["infer_crossreferences"]:
+            from crossreference import infer_crossreferences
+
+            source = args["--source"]
+            if source not in ("jade", "bofip", "all"):
+                logger.error(f"Invalid source for infer_crossreferences: {source}. Use jade, bofip, or all.")
+                return 1
+
+            model = args["--model"] if args["--model"] else EMBEDDING_MODEL
+            model_suffix = format_model_name(model)
+            if not re.fullmatch(r"[a-zA-Z0-9_-]+", model_suffix):
+                logger.error(
+                    "Invalid model name for infer_crossreferences: %s (formatted=%s). "
+                    "Allowed characters after provider prefix: a-z, A-Z, 0-9, underscore, hyphen.",
+                    model,
+                    model_suffix,
+                )
+                return 1
+            logger.info(
+                f"Inferring cross-references (source={source}, model={model})"
+            )
+            summary = infer_crossreferences(source=source, model=model, debug=debug_mode)
+            if summary.get("failed_docs", 0) > 0:
+                logger.error(
+                    "infer_crossreferences finished with %s failed document(s)",
+                    summary.get("failed_docs"),
+                )
+                return 1
 
         return 0
 

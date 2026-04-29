@@ -1,0 +1,36 @@
+{
+  "run_name": "process_legi",
+  "started_at": "2026-04-22T00:55:56.889434+00:00",
+  "ended_at": "2026-04-22T05:12:48.128246+00:00",
+  "total_wall_time_sec": 15411.238809956936,
+  "stage_seconds": {
+    "smart_preprocessing": 1.5299301594495773e-06,
+    "parse": 140.1352031303104,
+    "chunking": 161.39198157540523,
+    "embedding": 3181.811000213027,
+    "postgres_insert": 377.83646828471683,
+    "graph_upsert": 7235.921237476636
+  },
+  "counters": {
+    "docs_processed": 36993,
+    "chunks_produced": 37532,
+    "rows_written": 37532
+  },
+  "errors": [],
+  "retries": 0,
+  "host": {
+    "hostname": "hotep",
+    "platform": "Linux-6.8.0-107-generic-x86_64-with-glibc2.39",
+    "python_version": "3.12.3"
+  },
+  "embedding_model": "louisbrulenaudet/lemone-embed-pro",
+  "metadata": {
+    "table_name": "legi",
+    "streaming": true,
+    "parallel_processing": false,
+    "max_workers": 8,
+    "batch_size_docs": 16
+  },
+  "docs_per_sec": 2.400391068893142,
+  "chunks_per_sec": 2.435365544770562
+}

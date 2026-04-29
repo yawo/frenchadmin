@@ -1,0 +1,40 @@
+{
+  "run_name": "process_legi",
+  "started_at": "2026-04-25T16:59:07.880532+00:00",
+  "ended_at": "2026-04-25T17:00:02.172769+00:00",
+  "total_wall_time_sec": 54.292235502041876,
+  "stage_seconds": {
+    "smart_preprocessing": 1.4628749340772629e-06,
+    "parse": 0.008470128988847136,
+    "chunking": 5.484388573793694,
+    "embedding": 48.47594685503282,
+    "postgres_insert": 0.020709809847176075
+  },
+  "counters": {
+    "docs_processed": 1,
+    "chunks_produced": 1,
+    "errors": 1
+  },
+  "errors": [
+    {
+      "stage": "process_data",
+      "error": "relation \"legi\" does not exist\nLINE 1: DELETE FROM LEGI WHERE doc_id = ANY(ARRAY['LEGIARTI000006207...\n                    ^\n"
+    }
+  ],
+  "retries": 0,
+  "host": {
+    "hostname": "hotep",
+    "platform": "Linux-6.8.0-107-generic-x86_64-with-glibc2.39",
+    "python_version": "3.12.3"
+  },
+  "embedding_model": "BAAI/bge-m3",
+  "metadata": {
+    "table_name": "legi",
+    "streaming": true,
+    "parallel_processing": false,
+    "max_workers": 8,
+    "batch_size_docs": 16
+  },
+  "docs_per_sec": 0.018418840019258205,
+  "chunks_per_sec": 0.018418840019258205
+}

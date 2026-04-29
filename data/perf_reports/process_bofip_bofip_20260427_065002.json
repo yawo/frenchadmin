@@ -1,0 +1,36 @@
+{
+  "run_name": "process_bofip",
+  "started_at": "2026-04-26T23:47:58.067336+00:00",
+  "ended_at": "2026-04-27T04:50:02.316097+00:00",
+  "total_wall_time_sec": 18124.24876034609,
+  "stage_seconds": {
+    "smart_preprocessing": 1.4719553291797638e-06,
+    "parse": 45.0628516189754,
+    "chunking": 276.99142207670957,
+    "embedding": 17532.46892919368,
+    "postgres_insert": 170.79934484208934,
+    "graph_upsert": 78.67241242923774
+  },
+  "counters": {
+    "docs_processed": 12748,
+    "chunks_produced": 14296,
+    "rows_written": 14296
+  },
+  "errors": [],
+  "retries": 0,
+  "host": {
+    "hostname": "hotep",
+    "platform": "Linux-6.8.0-107-generic-x86_64-with-glibc2.39",
+    "python_version": "3.12.3"
+  },
+  "embedding_model": "BAAI/bge-m3",
+  "metadata": {
+    "table_name": "bofip",
+    "streaming": true,
+    "parallel_processing": false,
+    "max_workers": 8,
+    "batch_size_docs": 16
+  },
+  "docs_per_sec": 0.703367083985917,
+  "chunks_per_sec": 0.7887775206042257
+}

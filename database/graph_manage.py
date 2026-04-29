@@ -678,3 +678,171 @@ def upsert_bofip_node(data_to_insert: list):
             len(data_to_insert),
             exc,
         )
+
+
+# ── Cross-reference graph injection ──────────────────────────────────────────
+
+
+def inject_cross_reference_edges(source_type: str, source_doc_id: str) -> bool:
+    """Inject APPLIES_TO / INTERPRETS edges from cross_reference_legi_edges.
+
+    Only writes from aggregated edge table, never from raw mentions.
+    """
+    from database.database_manage import get_connection
+
+    if source_type not in {"jade", "bofip"}:
+        logger.error(
+            "Cross-ref injection received invalid source_type=%s for doc=%s",
+            source_type,
+            source_doc_id,
+        )
+        return False
+
+    graph = _get_graph()
+    if graph is None:
+        return False
+
+    edge_label = "APPLIES_TO" if source_type == "jade" else "INTERPRETS"
+    source_label = "JudicialDecision" if source_type == "jade" else "TaxGuidance"
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                source_doc_id,
+                target_legi_doc_id,
+                best_confidence,
+                occurrence_count,
+                resolver_methods,
+                normalized_numbers
+            FROM cross_reference_legi_edges
+            WHERE source_type = %s AND source_doc_id = %s
+        """, (source_type, source_doc_id))
+        rows = cursor.fetchall()
+
+    if not rows:
+        try:
+            graph.query(
+                f"""
+                MATCH (s:{source_label} {{doc_id: $source_doc_id}})-[r:{edge_label}]->(:LegalText)
+                DELETE r
+                """,
+                {"source_doc_id": source_doc_id},
+            )
+            return True
+        except Exception as exc:
+            logger.warning(
+                f"Cross-ref stale-edge cleanup failed for {source_type}:{source_doc_id}: {exc}"
+            )
+            return False
+
+    injected = 0
+    missing = 0
+    failed = 0
+    desired_target_ids = sorted({row[1] for row in rows if row[1]})
+    upserted_target_ids = set()
+
+    for row in rows:
+        src_doc, target_id, conf, occ, methods, norm_nums = row
+        params = {
+            "source_doc_id": src_doc,
+            "target_legi_doc_id": target_id,
+            "best_confidence": conf,
+            "occurrence_count": occ,
+            "resolver_methods": methods or [],
+            "normalized_numbers": [n for n in (norm_nums or []) if n],
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+
+        # Verify nodes exist before edge creation
+        try:
+            check = graph.query(
+                f"""
+                MATCH (s:{source_label} {{doc_id: $source_doc_id}})
+                MATCH (t:LegalText {{doc_id: $target_legi_doc_id}})
+                RETURN count(s) as src_count, count(t) as tgt_count
+                """,
+                params,
+            )
+            result_set = check.result_set
+            if not result_set or result_set[0][0] == 0 or result_set[0][1] == 0:
+                missing += 1
+                logger.warning(
+                    f"Cross-ref edge skipped: source or target node missing "
+                    f"({source_label}:{src_doc} → LegalText:{target_id})"
+                )
+                continue
+        except Exception as exc:
+            missing += 1
+            logger.warning(
+                f"FalkorDB node check failed (non-fatal), skipping edge "
+                f"({source_label}:{src_doc} → LegalText:{target_id}): {exc}"
+            )
+            continue
+
+        try:
+            graph.query(
+                f"""
+                MATCH (s:{source_label} {{doc_id: $source_doc_id}})
+                MATCH (t:LegalText {{doc_id: $target_legi_doc_id}})
+                MERGE (s)-[r:{edge_label}]->(t)
+                SET r.confidence = $best_confidence,
+                    r.occurrence_count = $occurrence_count,
+                    r.resolver_methods = $resolver_methods,
+                    r.normalized_numbers = $normalized_numbers,
+                    r.updated_at = $updated_at
+                """,
+                params,
+            )
+            injected += 1
+            upserted_target_ids.add(target_id)
+        except Exception as exc:
+            failed += 1
+            logger.warning(
+                f"Cross-ref edge upsert failed (non-fatal) "
+                f"({source_label}:{src_doc} → LegalText:{target_id}): {exc}"
+            )
+
+    sync_ok = (
+        missing == 0
+        and failed == 0
+    )
+    
+    # Verify all desired edges were upserted (may fail silently if graph unavailable)
+    if len(upserted_target_ids) != len(desired_target_ids):
+        missing_targets = len(desired_target_ids) - len(upserted_target_ids)
+        logger.warning(
+            f"Cross-ref incomplete upsert for {source_type}:{source_doc_id}: "
+            f"{missing_targets} targets not reached"
+        )
+        sync_ok = False
+
+    try:
+        graph.query(
+            f"""
+            MATCH (s:{source_label} {{doc_id: $source_doc_id}})-[r:{edge_label}]->(t:LegalText)
+            WHERE NOT t.doc_id IN $desired_target_ids
+            DELETE r
+            """,
+            {
+                "source_doc_id": source_doc_id,
+                "desired_target_ids": desired_target_ids,
+            },
+        )
+    except Exception as exc:
+        sync_ok = False
+        logger.warning(
+            f"Cross-ref stale-edge prune failed for {source_type}:{source_doc_id}: {exc}"
+        )
+
+    if not sync_ok:
+        logger.warning(
+            f"Cross-ref sync incomplete for {source_type}:{source_doc_id} "
+            f"(missing={missing}, failed={failed})"
+        )
+
+    logger.info(
+        f"Injected {injected}/{len(desired_target_ids)} {edge_label} edges for {source_type}:{source_doc_id} "
+        f"(missing={missing}, failed={failed}, sync_ok={sync_ok})"
+    )
+    return sync_ok

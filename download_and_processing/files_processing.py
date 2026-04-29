@@ -50,7 +50,7 @@ logger = get_logger(__name__)
 sys.setrecursionlimit(10000)
 
 _SMART_PROCESS_TARGETS = {"legi", "jade", "bofip"}
-_SMART_PROCESS_HAS_RUN = True # False
+_SMART_PROCESS_HAS_RUN = False# True # False
 
 
 def _telemetry_stage(telemetry: PerfTelemetry | None, stage_name: str):

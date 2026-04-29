@@ -1,0 +1,34 @@
+{
+  "run_name": "process_jade",
+  "started_at": "2026-04-28T16:56:00.288445+00:00",
+  "ended_at": "2026-04-28T16:56:00.288544+00:00",
+  "total_wall_time_sec": 9.836299977905583e-05,
+  "stage_seconds": {
+    "smart_preprocessing": 1.7390002540196292e-06
+  },
+  "counters": {
+    "errors": 1
+  },
+  "errors": [
+    {
+      "stage": "process_data",
+      "error": "No selected DILA XML files found in ./data/selected/jade"
+    }
+  ],
+  "retries": 0,
+  "host": {
+    "hostname": "hotep",
+    "platform": "Linux-6.8.0-110-generic-x86_64-with-glibc2.39",
+    "python_version": "3.12.3"
+  },
+  "embedding_model": "BAAI/bge-m3",
+  "metadata": {
+    "table_name": "jade",
+    "streaming": true,
+    "parallel_processing": false,
+    "max_workers": 8,
+    "batch_size_docs": 32
+  },
+  "docs_per_sec": 0.0,
+  "chunks_per_sec": 0.0
+}

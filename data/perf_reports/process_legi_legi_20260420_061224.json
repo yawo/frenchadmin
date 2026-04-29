@@ -1,0 +1,43 @@
+{
+  "run_name": "process_legi",
+  "started_at": "2026-04-20T03:53:22.989605+00:00",
+  "ended_at": "2026-04-20T04:12:24.180421+00:00",
+  "total_wall_time_sec": 1141.1908141218591,
+  "stage_seconds": {
+    "smart_preprocessing": 1.4731194823980331e-06,
+    "parse": 4.191302889492363,
+    "chunking": 5.150878125336021,
+    "embedding": 1047.8651061337441,
+    "postgres_insert": 8.409946407191455,
+    "graph_upsert": 0.6463437338825315
+  },
+  "counters": {
+    "docs_processed": 627,
+    "chunks_produced": 644,
+    "rows_written": 644,
+    "retries": 4,
+    "errors": 1
+  },
+  "errors": [
+    {
+      "stage": "process_data",
+      "error": "CUDA out of memory. Tried to allocate 20.00 MiB. GPU 0 has a total capacity of 5.60 GiB of which 2.69 MiB is free. Including non-PyTorch memory, this process has 5.56 GiB memory in use. Of the allocated memory 5.45 GiB is allocated by PyTorch, and 8.70 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)"
+    }
+  ],
+  "retries": 4,
+  "host": {
+    "hostname": "hotep",
+    "platform": "Linux-6.8.0-107-generic-x86_64-with-glibc2.39",
+    "python_version": "3.12.3"
+  },
+  "embedding_model": "louisbrulenaudet/lemone-embed-pro",
+  "metadata": {
+    "table_name": "legi",
+    "streaming": true,
+    "parallel_processing": false,
+    "max_workers": 8,
+    "batch_size_docs": 16
+  },
+  "docs_per_sec": 0.5494260839125957,
+  "chunks_per_sec": 0.5643228038910871
+}

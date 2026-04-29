@@ -15,4 +15,16 @@ from .graph_manage import (
     upsert_bofip_node,
     upsert_jade_node,
     upsert_legi_node,
+    inject_cross_reference_edges,
+)
+from .cross_reference_manage import (
+    aggregate_and_upsert_edges,
+    create_cross_reference_tables,
+    delete_mentions_and_edges_for_doc,
+    get_edge_source_hash,
+    get_source_state,
+    get_source_state_hash,
+    insert_mentions_batch,
+    refresh_legi_reference_catalog,
+    upsert_source_state_hash,
 )

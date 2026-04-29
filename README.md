@@ -233,6 +233,57 @@ This script will:
   - **[`scripts/write_tchap_message.sh`](scripts/write_tchap_message.sh)**: Send notifications to Tchap (French government chat).
 - **[`CROSSREFERENCE.md`](CROSSREFERENCE.md)**: Technical specification for JADE/BOFiP → LEGI cross-reference inference (RAG/graphRAG).
 
+## CROSS REFERENCE details
+    Files created/modified:
+
+
+    ┌─────────────────────────────────────┬───────────────────────────────────────────────────────────────────────────────────────────┐
+    │ File                                																					  │ Purpose
+    ├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+    │ database/cross_reference_manage.py  											│ 3 new tables, catalog refresh, mention/edge CRUD                                          │
+    ├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+    │ database/__init__.py                																	│ Added cross-reference exports                                                             │
+    ├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+    │ database/database_manage.py         │ Wired create_cross_reference_tables() + init_graph_schema() into create_all_tables        │
+    ├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+    │ database/graph_manage.py            │ inject_cross_reference_edges() for APPLIES_TO/INTERPRETS                                  │
+    ├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+    │ crossreference/__init__.py          │ Package exports                                                                           │
+    ├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+    │ crossreference/normalizer.py        │ Primary + loose article number normalization                                              │
+    ├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+    │ crossreference/alias_detector.py    │ CGI/LPF/CIBS family alias detection                                                       │
+    ├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+    │ crossreference/extractor.py         │ Article token extraction with enumeration support                                         │
+    ├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+    │ crossreference/resolver.py          │ Full cascade: A→B→C→D→E                                                                   │
+    ├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+    │ crossreference/fuzzy_resolver.py    │ rapidfuzz scoped fallback                                                                 │
+    ├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+    │ crossreference/semantic_resolver.py │ Cosine-distance semantic fallback                                                         │
+    ├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+    │ crossreference/confidence.py        │ Confidence scoring with adjustments                                                       │
+    ├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+    │ crossreference/pipeline.py          │ Orchestrator: catalog refresh → doc aggregation → extraction → resolution → edges → graph │
+    ├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+    │ main.py                             │ Added infer_crossreferences CLI command                                                   │
+    ├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+    │ pyproject.toml                      │ Added rapidfuzz, crossreference* to packages                                              │
+    └─────────────────────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────┘
+
+    Usage:
+
+     1 main.py infer_crossreferences --source all
+     2 main.py infer_crossreferences --source jade
+     3 main.py infer_crossreferences --source bofip --debug
+
+    Resolution cascade per mention:
+    A. Exact normalized + temporal + family → 0.99
+    B. Loose key fallback → 0.92
+    C. Family-prior deterministic → 0.84
+    D. Fuzzy scoped (rapidfuzz, ≥96) → 0.74
+    E. Semantic scoped (cosine <=>) → 0.62
+
 ## ⚖️ License
 
 This project is licensed under the [MIT License](./LICENSE).

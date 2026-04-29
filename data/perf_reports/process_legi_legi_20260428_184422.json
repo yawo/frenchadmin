@@ -1,0 +1,40 @@
+{
+  "run_name": "process_legi",
+  "started_at": "2026-04-28T16:44:14.181757+00:00",
+  "ended_at": "2026-04-28T16:44:22.443399+00:00",
+  "total_wall_time_sec": 8.261639780999758,
+  "stage_seconds": {
+    "smart_preprocessing": 1.7920001482707448e-06,
+    "parse": 0.000137648999952944,
+    "chunking": 2.310759056000279,
+    "embedding": 5.81225924499995,
+    "postgres_insert": 0.00027693599986378103
+  },
+  "counters": {
+    "docs_processed": 1,
+    "chunks_produced": 1,
+    "errors": 1
+  },
+  "errors": [
+    {
+      "stage": "process_data",
+      "error": "connection to server at \"localhost\" (127.0.0.1), port 5432 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"
+    }
+  ],
+  "retries": 0,
+  "host": {
+    "hostname": "hotep",
+    "platform": "Linux-6.8.0-110-generic-x86_64-with-glibc2.39",
+    "python_version": "3.12.3"
+  },
+  "embedding_model": "BAAI/bge-m3",
+  "metadata": {
+    "table_name": "legi",
+    "streaming": true,
+    "parallel_processing": false,
+    "max_workers": 8,
+    "batch_size_docs": 32
+  },
+  "docs_per_sec": 0.12104134608964856,
+  "chunks_per_sec": 0.12104134608964856
+}

@@ -338,6 +338,19 @@ def create_all_tables(model=EMBEDDING_MODEL, delete_existing: bool = False):
                 table_name=table_name[:63], full_table_name=table_name
             )
 
+        # Wire cross-reference tables and graph schema
+        try:
+            from database.cross_reference_manage import create_cross_reference_tables
+            create_cross_reference_tables()
+        except Exception as e:
+            logger.warning(f"Cross-reference tables not created: {e}")
+
+        try:
+            from database.graph_manage import init_graph_schema
+            init_graph_schema()
+        except Exception as e:
+            logger.warning(f"Graph schema not initialized: {e}")
+
     except Exception as e:
         logger.error(f"Error creating tables in PostgreSQL: {e}")
         raise e

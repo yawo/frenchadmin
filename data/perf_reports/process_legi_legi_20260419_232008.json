@@ -1,0 +1,40 @@
+{
+  "run_name": "process_legi",
+  "started_at": "2026-04-19T21:20:00.846764+00:00",
+  "ended_at": "2026-04-19T21:20:08.663933+00:00",
+  "total_wall_time_sec": 7.817167108063586,
+  "stage_seconds": {
+    "smart_preprocessing": 1.5390105545520782e-06,
+    "parse": 0.008340763975866139,
+    "chunking": 2.2217831619782373,
+    "embedding": 5.2183935469947755,
+    "postgres_insert": 0.07401435601059347
+  },
+  "counters": {
+    "docs_processed": 1,
+    "chunks_produced": 1,
+    "errors": 1
+  },
+  "errors": [
+    {
+      "stage": "process_data",
+      "error": "can't adapt type 'Tensor'"
+    }
+  ],
+  "retries": 0,
+  "host": {
+    "hostname": "hotep",
+    "platform": "Linux-6.8.0-107-generic-x86_64-with-glibc2.39",
+    "python_version": "3.12.3"
+  },
+  "embedding_model": "louisbrulenaudet/lemone-embed-pro",
+  "metadata": {
+    "table_name": "legi",
+    "streaming": true,
+    "parallel_processing": false,
+    "max_workers": 8,
+    "batch_size_docs": 32
+  },
+  "docs_per_sec": 0.12792357975416405,
+  "chunks_per_sec": 0.12792357975416405
+}

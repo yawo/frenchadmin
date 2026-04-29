@@ -1,0 +1,34 @@
+{
+  "run_name": "process_legi",
+  "started_at": "2026-04-18T19:16:11.637373+00:00",
+  "ended_at": "2026-04-18T19:16:11.937616+00:00",
+  "total_wall_time_sec": 0.3002408411120996,
+  "stage_seconds": {
+    "smart_preprocessing": 0.30018678097985685
+  },
+  "counters": {
+    "errors": 1
+  },
+  "errors": [
+    {
+      "stage": "process_data",
+      "error": "Command '['bash', './download_and_processing/smart_process_tax.sh']' returned non-zero exit status 1."
+    }
+  ],
+  "retries": 0,
+  "host": {
+    "hostname": "hotep",
+    "platform": "Linux-6.8.0-107-generic-x86_64-with-glibc2.39",
+    "python_version": "3.12.3"
+  },
+  "embedding_model": "louisbrulenaudet/lemone-embed-pro",
+  "metadata": {
+    "table_name": "legi",
+    "streaming": true,
+    "parallel_processing": false,
+    "max_workers": 8,
+    "batch_size_docs": 32
+  },
+  "docs_per_sec": 0.0,
+  "chunks_per_sec": 0.0
+}

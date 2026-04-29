@@ -1,0 +1,36 @@
+{
+  "run_name": "process_legi",
+  "started_at": "2026-04-28T16:45:19.287736+00:00",
+  "ended_at": "2026-04-28T16:56:00.287216+00:00",
+  "total_wall_time_sec": 640.9994788909999,
+  "stage_seconds": {
+    "smart_preprocessing": 1.4659999578725547e-06,
+    "parse": 0.19397532699986186,
+    "chunking": 4.757958632992995,
+    "embedding": 172.1177954150089,
+    "postgres_insert": 13.79841592698267,
+    "graph_upsert": 346.92304962100206
+  },
+  "counters": {
+    "docs_processed": 760,
+    "chunks_produced": 763,
+    "rows_written": 763
+  },
+  "errors": [],
+  "retries": 0,
+  "host": {
+    "hostname": "hotep",
+    "platform": "Linux-6.8.0-110-generic-x86_64-with-glibc2.39",
+    "python_version": "3.12.3"
+  },
+  "embedding_model": "BAAI/bge-m3",
+  "metadata": {
+    "table_name": "legi",
+    "streaming": true,
+    "parallel_processing": false,
+    "max_workers": 8,
+    "batch_size_docs": 32
+  },
+  "docs_per_sec": 1.1856483897847847,
+  "chunks_per_sec": 1.190328580797093
+}
