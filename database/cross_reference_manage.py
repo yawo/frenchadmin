@@ -411,16 +411,24 @@ def _build_aliases_for_row(number, code_label, category):
 
 
 def get_edge_source_hash(cursor, source_type, source_doc_id):
-    """Return stored source_hash for a source doc edge, or None if never processed."""
-    cursor.execute("""
-        SELECT DISTINCT source_hash
-        FROM cross_reference_legi_edges
+    """Return stored source_hash for a source doc from state, or None if never processed.
+    
+    Deprecated: use get_source_state_hash() instead. This queries the authoritative
+    source_state table rather than edges (which may be deleted/empty).
+    """
+    _ensure_source_state_columns(cursor)
+    cursor.execute(
+        """
+        SELECT source_hash
+        FROM cross_reference_source_state
         WHERE source_type = %s AND source_doc_id = %s
-    """, (source_type, source_doc_id))
-    rows = cursor.fetchall()
-    if not rows:
+        """,
+        (source_type, source_doc_id),
+    )
+    row = cursor.fetchone()
+    if not row:
         return None
-    return rows[0][0]
+    return row[0]
 
 
 def get_source_state(cursor, source_type, source_doc_id):

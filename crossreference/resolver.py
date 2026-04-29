@@ -110,7 +110,7 @@ def resolve_article(
         context_window=context_text,
         source_date=source_date,
         detected_parents=detected_parents,
-        has_code_alias=bool(detected_family),
+        has_code_alias=bool(detected_alias),
         model=model,
     )
     if result:

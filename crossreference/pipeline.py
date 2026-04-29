@@ -295,7 +295,7 @@ def _get_source_chunks(source_type: str, doc_id: str) -> list[dict]:
         if source_type == "jade":
             cursor.execute(
                 """
-                SELECT chunk_id, chunk_index, chunk_text, chunk_text
+                SELECT chunk_id, chunk_index, text, chunk_text
                 FROM jade
                 WHERE doc_id = %s
                 ORDER BY chunk_index
@@ -363,7 +363,9 @@ def _process_source_document(
         normalized = raw["normalized_number"]
         if not normalized:
             continue
-        repeated_in_chunks_map.setdefault(normalized, set()).add(raw["source_chunk_id"])
+        # Track (normalized_number, chunk_id) pair to detect article reuse across chunks
+        key = (normalized, raw["source_chunk_id"])
+        repeated_in_chunks_map.setdefault(normalized, set()).add(key)
 
     # Resolve each mention
     mentions = []
@@ -380,6 +382,7 @@ def _process_source_document(
         detected_alias = result["explain"].get("detected_code_alias")
         detected_family = result["explain"].get("detected_code_family")
         semantic_similarity = result.get("explain", {}).get("cosine_similarity")
+        # Boost if this normalized_number appears in multiple different chunks
         repeated_in_chunks = bool(
             raw["normalized_number"]
             and len(repeated_in_chunks_map.get(raw["normalized_number"], set())) > 1
@@ -469,7 +472,7 @@ def _process_source_document(
         graph_sync_ok=graph_sync_ok,
     )
     if not graph_sync_ok:
-        raise RuntimeError(f"Graph sync failed for {source_type}:{doc_id}")
+        logger.warning(f"Graph sync incomplete for {source_type}:{doc_id}; will retry on next run")
 
     return mentions
 
