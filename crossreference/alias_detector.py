@@ -178,3 +178,32 @@ def get_family_aliases(family: str) -> list[str]:
     if not info:
         return []
     return list(info["aliases"])
+
+
+def extract_code_family_from_mention(mention_text: str) -> str | None:
+    """Extract code family from mention text.
+    
+    E.g. "1745 du code général des impôts" -> "CGI"
+         "L. 247 du livre des procédures fiscales" -> "LPF"
+    
+    Returns:
+        family name (e.g. "CGI", "LPF") or None if not detected.
+    """
+    if not mention_text:
+        return None
+    
+    normalized = _normalize_for_alias(mention_text)
+    
+    # Try core aliases first (longest first for specificity)
+    for norm_alias in _SORTED_CORE_ALIASES:
+        if _alias_in_text(norm_alias, normalized):
+            family, _, _ = _ALIAS_TO_FAMILY[norm_alias]
+            return family
+    
+    # Try extended aliases
+    extended_aliases = _get_extended_aliases()
+    for alias in sorted(extended_aliases.keys(), key=len, reverse=True):
+        if _alias_in_text(alias, normalized):
+            return "OTHER_CODE"
+    
+    return None

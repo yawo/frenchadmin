@@ -15,7 +15,7 @@ from typing import Optional
 from config import EMBEDDING_MODEL
 from database.database_manage import get_connection
 from crossreference.normalizer import normalize_article_number, loose_normalized_number
-from crossreference.alias_detector import infer_code_family
+from crossreference.alias_detector import infer_code_family, extract_code_family_from_mention
 from crossreference.fuzzy_resolver import fuzzy_resolve
 from crossreference.semantic_resolver import semantic_resolve
 
@@ -41,6 +41,17 @@ def resolve_article(
 
     # Detect code family from context
     detected_family, detected_alias, detected_parents = infer_code_family(context_text)
+    
+    # If not detected from context, try extracting from mention itself
+    mention_family = None
+    if not detected_family:
+        mention_family = extract_code_family_from_mention(raw_article_text)
+        if mention_family:
+            # Use extracted family to get parent_text_ids
+            from crossreference.alias_detector import CODE_FAMILY_MAP
+            fam_info = CODE_FAMILY_MAP.get(mention_family, {})
+            detected_parents = fam_info.get("parent_text_ids", [])
+            detected_family = mention_family
 
     explain = {
         "raw_text": raw_article_text,
