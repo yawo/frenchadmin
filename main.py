@@ -28,7 +28,7 @@ Commands:
 Options:
     --delete-existing       Delete existing tables before creating new ones
     --all                   Select all data sources from the data configuration file
-    --model=<model_name>    Embedding model name [default: louisbrulenaudet/lemone-embed-pro]. It is mandatory to specify the same model for all commands.
+    --model=<model_name>    Embedding model name [default: BAAI/bge-m3]. It is mandatory to specify the same model for all commands.
     --source=<source>       Source to process (legi, jade, bofip, all)
     --table=<name>          Table name to export or split (legi, jade, bofip)
     --folder=<path>         Folder containing unprocessed data
@@ -42,18 +42,18 @@ Options:
     -h --help               Show this help message
 
 Examples:
-    main.py create_tables --model louisbrulenaudet/lemone-embed-pro --delete-existing
+    main.py create_tables --model BAAI/bge-m3 --delete-existing
     main.py download_files --all
-    main.py download_and_process_files --source lemi --model louisbrulenaudet/lemone-embed-pro --debug
-    main.py download_and_process_files --all --model louisbrulenaudet/lemone-embed-pro
-    main.py process_files --source jade --model louisbrulenaudet/lemone-embed-pro
-    main.py process_files --all --folder data/unprocessed --model louisbrulenaudet/lemone-embed-pro
+    main.py download_and_process_files --source lemi --model BAAI/bge-m3 --debug
+    main.py download_and_process_files --all --model BAAI/bge-m3
+    main.py process_files --source jade --model BAAI/bge-m3
+    main.py process_files --all --folder data/unprocessed --model BAAI/bge-m3
     main.py split_table --table legi
     main.py export_table --table legi --split
     main.py export_table --table all --output data/parquet
     main.py upload_dataset --input data/parquet/bofip.parquet --dataset-name bofip --repository AgentPublic --private
     main.py upload_dataset --all --repository AgentPublic
-    main.py infer_crossreferences --source all --model louisbrulenaudet/lemone-embed-pro
+    main.py infer_crossreferences --source all --model BAAI/bge-m3
     main.py infer_crossreferences --source jade
     main.py clean_crossreferences --source jade
     main.py clean_crossreferences --source all

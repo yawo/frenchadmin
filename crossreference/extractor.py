@@ -115,14 +115,23 @@ def extract_article_mentions(text: str):
                 # Validate: code_part should not contain sentence connectors
                 # Remove trailing verbs like "impliquent", "contester", etc.
                 if code_part:
-                    # Stop at known verb patterns that indicate end of code reference
-                    verb_stop = re.search(
-                        r"\s+(impliquent|contester|établit|imposent|déduit|reste|demeurent)\b",
+                    # Stop at relative pronouns/conjunctions or main verbs
+                    connector_stop = re.search(
+                        r"\s+(?:qui|que|qu'|c'est|c'était|que\s+la|que\s+le|qu'il|qu'elle)\b",
                         code_part,
                         re.IGNORECASE
                     )
-                    if verb_stop:
-                        code_part = code_part[:verb_stop.start()].strip()
+                    if connector_stop:
+                        code_part = code_part[:connector_stop.start()].strip()
+                    else:
+                        # Stop at known verb patterns that indicate end of code reference
+                        verb_stop = re.search(
+                            r"\s+(impliquent|contester|établit|imposent|déduit|reste|demeurent)\b",
+                            code_part,
+                            re.IGNORECASE
+                        )
+                        if verb_stop:
+                            code_part = code_part[:verb_stop.start()].strip()
                 
                 if code_part:
                     full_article = f"{article_part} du {code_part}"

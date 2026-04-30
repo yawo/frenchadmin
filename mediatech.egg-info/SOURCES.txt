@@ -5,7 +5,17 @@ pyproject.toml
 config/__init__.py
 config/config.py
 config/logging_config.py
+crossreference/__init__.py
+crossreference/alias_detector.py
+crossreference/confidence.py
+crossreference/extractor.py
+crossreference/fuzzy_resolver.py
+crossreference/normalizer.py
+crossreference/pipeline.py
+crossreference/resolver.py
+crossreference/semantic_resolver.py
 database/__init__.py
+database/cross_reference_manage.py
 database/database_manage.py
 database/graph_manage.py
 download_and_processing/__init__.py
