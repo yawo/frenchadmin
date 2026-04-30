@@ -7,7 +7,6 @@ Two-step extraction:
 
 import re
 
-from crossreference.normalizer import normalize_article_number
 
 # Single article token pattern
 # Supports: numeric, numeric-hyphen chains, L/R/D/A prefixes (including L.O.), *, spaced suffixes, ordinal suffixes
@@ -82,42 +81,32 @@ def extract_article_mentions(text: str):
                 raw_end = raw_start + len(matched_raw)
                 end = raw_end
 
-            # Include code name when present after prepositions (du/de/d')
-            # Extract longer context to capture "1745 du COD" not just "1745"
-            lookahead_end = min(len(text), raw_end + 80)
+            # Include full code name after prepositions (du/de/d')
+            # Continue reading until: comma, semicolon, newline, or next article anchor
+            # Stop at comma/semicolon/newline, NOT at period (common in abbreviations like "art." or "L.")
+            lookahead_end = min(len(text), raw_end + 200)
             lookahead = text[raw_start:lookahead_end]
             
-            # Match: article_number [du/de/d'] [code_name or code_abbr]
-            code_abbr_match = re.match(
-                r'^(.+?)\s+(?:du|de|d[\'\s])\s*([A-Z]+\.?|[A-Za-z\s]+)',
+            # Match: article_number [du/de/d'] [code_name] until sentence boundary
+            code_full_match = re.match(
+                r"^(.+?)\s+(?:du|de|d['\s])\s+([^,;\n]+?)(?:\s*(?:,|;|$)|\s+(?:article|art\.))",
                 lookahead,
-                re.IGNORECASE
+                re.IGNORECASE,
             )
-            if code_abbr_match:
-                # Include code name/abbr in extraction
-                full_article = code_abbr_match.group(0).strip()
-                end = raw_start + len(full_article)
-                matched_raw = full_article
-            else:
-                # No code name, check if we hit a code boundary and need to truncate
-                code_match = _CODE_BOUNDARY_RE.search(lookahead)
-                if code_match and code_match.start() < (raw_end - raw_start):
-                    end = raw_start + code_match.start()
-                    matched_raw = text[raw_start:end]
-                    lowered = matched_raw.lower()
-                    for suffix in ["du ", "de ", "d'"]:
-                        if lowered.endswith(suffix):
-                            matched_raw = matched_raw[:-len(suffix)]
-                            break
-                    end = raw_start + len(matched_raw)
-                    # After truncation, validate that remaining text is still a valid article
-                    matched_normalized = normalize_article_number(matched_raw)
-                    if not matched_normalized:
-                        # Truncation destroyed the article structure; skip this boundary case
-                        continue
+            if code_full_match:
+                article_part = code_full_match.group(1).strip()
+                code_part = code_full_match.group(2).strip()
+                # Reconstruct with normalized preposition
+                if code_part:
+                    full_article = f"{article_part} du {code_part}"
                 else:
-                    matched_raw = text[raw_start:raw_end]
-                    end = raw_end
+                    full_article = article_part
+                matched_raw = full_article
+                end = raw_start + len(matched_raw)
+            else:
+                # Fallback: no code name match, use article token only
+                matched_raw = text[raw_start:raw_end]
+                end = raw_end
 
             matched = matched_raw.strip()
             if matched:
