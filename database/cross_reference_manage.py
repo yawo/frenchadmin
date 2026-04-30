@@ -24,7 +24,6 @@ from config import (
     POSTGRES_USER,
     get_logger,
 )
-from database.database_manage import get_connection
 
 logger = get_logger(__name__)
 _SOURCE_STATE_COLUMNS_ENSURED = False
@@ -677,3 +676,67 @@ def _get_admin_connection():
         user=POSTGRES_USER,
         password=POSTGRES_PASSWORD,
     )
+
+
+def clean_cross_reference_data(source: str = "all"):
+    """Clean cross-reference tables for one or all sources to force reprocessing.
+    
+    Removes:
+    - cross_reference_legi_mentions for source
+    - cross_reference_legi_edges for source
+    - cross_reference_source_state for source
+    
+    Args:
+        source: 'jade', 'bofip', or 'all'
+    """
+    if source not in ("jade", "bofip", "all"):
+        raise ValueError(f"Invalid source: {source}. Use jade, bofip, or all.")
+    
+    conn = None
+    try:
+        conn = _get_admin_connection()
+        cursor = conn.cursor()
+        
+        if source == "all":
+            logger.info("Cleaning ALL cross-reference data (jade and bofip)")
+            cursor.execute("DELETE FROM cross_reference_legi_mentions")
+            cursor.execute("DELETE FROM cross_reference_legi_edges")
+            cursor.execute("DELETE FROM cross_reference_source_state")
+        else:
+            logger.info(f"Cleaning cross-reference data for source={source}")
+            cursor.execute(
+                "DELETE FROM cross_reference_legi_mentions WHERE source_type = %s",
+                (source,)
+            )
+            cursor.execute(
+                "DELETE FROM cross_reference_legi_edges WHERE source_type = %s",
+                (source,)
+            )
+            cursor.execute(
+                "DELETE FROM cross_reference_source_state WHERE source_type = %s",
+                (source,)
+            )
+        
+        conn.commit()
+        
+        # Log results
+        cursor.execute("SELECT COUNT(*) FROM cross_reference_legi_mentions")
+        mentions_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM cross_reference_legi_edges")
+        edges_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM cross_reference_source_state")
+        state_count = cursor.fetchone()[0]
+        
+        logger.info(
+            f"Clean complete: {mentions_count} mentions remaining, "
+            f"{edges_count} edges remaining, {state_count} state entries remaining"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error cleaning cross-reference data: {e}")
+        if conn:
+            conn.rollback()
+        raise e
+    finally:
+        if conn:
+            conn.close()

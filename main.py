@@ -11,6 +11,7 @@ Usage:
     main.py export_table (--table=<name>) [--output=<path>] [--split] [--debug]
     main.py upload_dataset (--all | --dataset-name=<name>) [--input=<path>] [--repository=<name>] [--private] [--debug]
     main.py infer_crossreferences (--source=<source>) [--model=<model_name>] [--debug]
+    main.py clean_crossreferences (--source=<source>) [--debug]
     main.py -h | --help
 
 Commands:
@@ -22,6 +23,7 @@ Commands:
     export_table                Export table to Parquet files
     upload_dataset              Upload dataset to Hugging Face
     infer_crossreferences       Infer JADE/BOFIP -> LEGI cross-references
+    clean_crossreferences       Clean cross-reference tables (mentions, edges, state) for reprocessing
 
 Options:
     --delete-existing       Delete existing tables before creating new ones
@@ -42,7 +44,7 @@ Options:
 Examples:
     main.py create_tables --model louisbrulenaudet/lemone-embed-pro --delete-existing
     main.py download_files --all
-    main.py download_and_process_files --source legi --model louisbrulenaudet/lemone-embed-pro --debug
+    main.py download_and_process_files --source lemi --model louisbrulenaudet/lemone-embed-pro --debug
     main.py download_and_process_files --all --model louisbrulenaudet/lemone-embed-pro
     main.py process_files --source jade --model louisbrulenaudet/lemone-embed-pro
     main.py process_files --all --folder data/unprocessed --model louisbrulenaudet/lemone-embed-pro
@@ -53,6 +55,8 @@ Examples:
     main.py upload_dataset --all --repository AgentPublic
     main.py infer_crossreferences --source all --model louisbrulenaudet/lemone-embed-pro
     main.py infer_crossreferences --source jade
+    main.py clean_crossreferences --source jade
+    main.py clean_crossreferences --source all
 """
 
 import os
@@ -266,6 +270,19 @@ def main():
                     summary.get("failed_docs"),
                 )
                 return 1
+
+        # Clean cross-reference data
+        elif args["clean_crossreferences"]:
+            from database.cross_reference_manage import clean_cross_reference_data
+
+            source = args["--source"]
+            if source not in ("jade", "bofip", "all"):
+                logger.error(f"Invalid source for clean_crossreferences: {source}. Use jade, bofip, or all.")
+                return 1
+
+            logger.info(f"Cleaning cross-reference data for source={source}")
+            clean_cross_reference_data(source=source)
+            logger.info(f"Successfully cleaned cross-reference data for {source}")
 
         return 0
 
