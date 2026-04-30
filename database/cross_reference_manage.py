@@ -297,6 +297,13 @@ def refresh_legi_reference_catalog() -> str:
                     if category in fam_info.get("parent_text_ids", []):
                         family = fam_name
                         break
+            
+            # Fallback: extract code family from code_label
+            if not family and code_label:
+                # Extract first part before " - " or " Partie" (e.g., "Code civil", "Code de commerce")
+                code_name = code_label.split(" - ")[0].split(" Partie")[0].strip()
+                if code_name:
+                    family = code_name
 
             aliases = _build_aliases_for_row(number, code_label, category)
 
