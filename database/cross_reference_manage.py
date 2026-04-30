@@ -234,8 +234,11 @@ def refresh_legi_reference_catalog() -> str:
         # Full rebuild so obsolete rows are removed.
         write_cursor.execute("TRUNCATE TABLE legi_reference_catalog")
 
-        # Stream source rows in deterministic order to keep memory bounded.
-        read_cursor = conn.cursor(name="legi_reference_catalog_stream")
+        # Use regular cursor (not named) to avoid concurrency issues with named cursors.
+        # PostgreSQL doesn't allow concurrent operations on a named cursor from the same
+        # connection. When write_cursor operates while read_cursor is active, the named
+        # cursor becomes invalid. Regular cursor avoids this constraint.
+        read_cursor = conn.cursor()
         read_cursor.itersize = _CATALOG_STREAM_FETCH_SIZE
         read_cursor.execute(
             """
@@ -313,7 +316,9 @@ def refresh_legi_reference_catalog() -> str:
                 "aliases": aliases,
             }
             hash_builder.update(
-                json.dumps(normalized_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                json.dumps(
+                    normalized_payload, ensure_ascii=False, sort_keys=True
+                ).encode("utf-8")
             )
 
             insert_rows.append(
@@ -412,7 +417,7 @@ def _build_aliases_for_row(number, code_label, category):
 
 def get_edge_source_hash(cursor, source_type, source_doc_id):
     """Return stored source_hash for a source doc from state, or None if never processed.
-    
+
     Deprecated: use get_source_state_hash() instead. This queries the authoritative
     source_state table rather than edges (which may be deleted/empty).
     """
@@ -487,14 +492,20 @@ def upsert_source_state_hash(
 
 def delete_mentions_and_edges_for_doc(cursor, source_type, source_doc_id):
     """Delete all mentions and edges for one source document before rebuild."""
-    cursor.execute("""
+    cursor.execute(
+        """
         DELETE FROM cross_reference_legi_mentions
         WHERE source_type = %s AND source_doc_id = %s
-    """, (source_type, source_doc_id))
-    cursor.execute("""
+    """,
+        (source_type, source_doc_id),
+    )
+    cursor.execute(
+        """
         DELETE FROM cross_reference_legi_edges
         WHERE source_type = %s AND source_doc_id = %s
-    """, (source_type, source_doc_id))
+    """,
+        (source_type, source_doc_id),
+    )
 
 
 def insert_mentions_batch(cursor, mentions):
@@ -502,14 +513,35 @@ def insert_mentions_batch(cursor, mentions):
     if not mentions:
         return
     columns = [
-        "mention_hash", "source_type", "source_doc_id", "source_chunk_id",
-        "source_chunk_index", "source_date", "source_hash", "source_title",
-        "source_secondary_id", "relation_kind", "matched_text", "match_start",
-        "match_end", "normalized_number", "normalized_number_loose",
-        "detected_code_alias", "detected_code_family", "detected_parent_text_ids",
-        "target_legi_doc_id", "target_parent_text_id", "target_article_number",
-        "target_start_date", "target_end_date", "resolver_stage", "resolver_method",
-        "confidence", "is_accepted", "context_window", "explain",
+        "mention_hash",
+        "source_type",
+        "source_doc_id",
+        "source_chunk_id",
+        "source_chunk_index",
+        "source_date",
+        "source_hash",
+        "source_title",
+        "source_secondary_id",
+        "relation_kind",
+        "matched_text",
+        "match_start",
+        "match_end",
+        "normalized_number",
+        "normalized_number_loose",
+        "detected_code_alias",
+        "detected_code_family",
+        "detected_parent_text_ids",
+        "target_legi_doc_id",
+        "target_parent_text_id",
+        "target_article_number",
+        "target_start_date",
+        "target_end_date",
+        "resolver_stage",
+        "resolver_method",
+        "confidence",
+        "is_accepted",
+        "context_window",
+        "explain",
     ]
     for i in range(0, len(mentions), 500):
         batch = mentions[i : i + 500]
@@ -543,7 +575,8 @@ def insert_mentions_batch(cursor, mentions):
 
 def aggregate_and_upsert_edges(cursor, source_type, source_doc_id):
     """Aggregate accepted mentions into edges for one source document."""
-    cursor.execute("""
+    cursor.execute(
+        """
         SELECT
             source_type,
             source_doc_id,
@@ -566,7 +599,9 @@ def aggregate_and_upsert_edges(cursor, source_type, source_doc_id):
         GROUP BY
             source_type, source_doc_id, source_date, source_hash,
             relation_kind, target_legi_doc_id, target_parent_text_id, target_article_number
-    """, (source_type, source_doc_id))
+    """,
+        (source_type, source_doc_id),
+    )
 
     rows = cursor.fetchall()
     if not rows:
@@ -574,12 +609,23 @@ def aggregate_and_upsert_edges(cursor, source_type, source_doc_id):
 
     for row in rows:
         (
-            src_type, src_doc, src_date, src_hash, rel_kind,
-            target_id, target_parent, target_number,
-            best_conf, occ_count, methods, chunk_ids, norm_nums,
+            src_type,
+            src_doc,
+            src_date,
+            src_hash,
+            rel_kind,
+            target_id,
+            target_parent,
+            target_number,
+            best_conf,
+            occ_count,
+            methods,
+            chunk_ids,
+            norm_nums,
         ) = row
 
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO cross_reference_legi_edges (
                 source_type, source_doc_id, source_date, source_hash,
                 relation_kind, target_legi_doc_id, target_parent_text_id,
@@ -603,14 +649,23 @@ def aggregate_and_upsert_edges(cursor, source_type, source_doc_id):
                 normalized_numbers = EXCLUDED.normalized_numbers,
                 explain = EXCLUDED.explain,
                 updated_at = NOW()
-        """, (
-            src_type, src_doc, src_date, src_hash, rel_kind,
-            target_id, target_parent, target_number,
-            best_conf, occ_count,
-            sorted(methods),
-            sorted(chunk_ids),
-            sorted(n for n in norm_nums if n),
-        ))
+        """,
+            (
+                src_type,
+                src_doc,
+                src_date,
+                src_hash,
+                rel_kind,
+                target_id,
+                target_parent,
+                target_number,
+                best_conf,
+                occ_count,
+                sorted(methods),
+                sorted(chunk_ids),
+                sorted(n for n in norm_nums if n),
+            ),
+        )
 
 
 def _get_admin_connection():
