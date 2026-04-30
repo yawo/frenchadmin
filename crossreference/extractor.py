@@ -82,29 +82,57 @@ def extract_article_mentions(text: str):
                 end = raw_end
 
             # Include full code name after prepositions (du/de/d')
-            # Continue reading until: comma, semicolon, newline, or next article anchor
-            # Stop at comma/semicolon/newline, NOT at period (common in abbreviations like "art." or "L.")
+            # Stop at: known code boundary, or max 5 words, or punctuation
             lookahead_end = min(len(text), raw_end + 200)
             lookahead = text[raw_start:lookahead_end]
             
-            # Match: article_number [du/de/d'] [code_name] until sentence boundary
-            code_full_match = re.match(
-                r"^(.+?)\s+(?:du|de|d['\s])\s+([^,;\n]+?)(?:\s*(?:,|;|$)|\s+(?:article|art\.))",
+            # Match: article [du/de/d'] then capture code name
+            prepos_match = re.match(
+                r"^(.+?)\s+(?:du|de|d['\s])\s+",
                 lookahead,
                 re.IGNORECASE,
             )
-            if code_full_match:
-                article_part = code_full_match.group(1).strip()
-                code_part = code_full_match.group(2).strip()
-                # Reconstruct with normalized preposition
+            if prepos_match:
+                article_part = prepos_match.group(1).strip()
+                code_start = prepos_match.end()
+                code_text = lookahead[code_start:]
+                
+                # Find known code boundary pattern or stop early
+                code_boundary_match = _CODE_BOUNDARY_RE.search(code_text)
+                if code_boundary_match:
+                    # Include matched code boundary
+                    code_part = code_text[:code_boundary_match.end()].strip()
+                else:
+                    # No known boundary, stop at: punctuation, or max 5 words
+                    stop_match = re.search(r"[,;\n]|(?:article|art\.)\s", code_text)
+                    if stop_match:
+                        code_part = code_text[:stop_match.start()].strip()
+                    else:
+                        # Take max 5 words
+                        words = code_text.split()[:5]
+                        code_part = " ".join(words)
+                
+                # Validate: code_part should not contain sentence connectors
+                # Remove trailing verbs like "impliquent", "contester", etc.
+                if code_part:
+                    # Stop at known verb patterns that indicate end of code reference
+                    verb_stop = re.search(
+                        r"\s+(impliquent|contester|établit|imposent|déduit|reste|demeurent)\b",
+                        code_part,
+                        re.IGNORECASE
+                    )
+                    if verb_stop:
+                        code_part = code_part[:verb_stop.start()].strip()
+                
                 if code_part:
                     full_article = f"{article_part} du {code_part}"
+                    matched_raw = full_article
+                    end = raw_start + len(matched_raw)
                 else:
-                    full_article = article_part
-                matched_raw = full_article
-                end = raw_start + len(matched_raw)
+                    matched_raw = text[raw_start:raw_end]
+                    end = raw_end
             else:
-                # Fallback: no code name match, use article token only
+                # No preposition, use article token only
                 matched_raw = text[raw_start:raw_end]
                 end = raw_end
 
