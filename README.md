@@ -238,11 +238,11 @@ This script will:
 
 
     ┌─────────────────────────────────────┬───────────────────────────────────────────────────────────────────────────────────────────┐
-    │ File                                																					  │ Purpose
+    │ File                                │ Purpose                                                                                   |
     ├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
-    │ database/cross_reference_manage.py  											│ 3 new tables, catalog refresh, mention/edge CRUD                                          │
+    │ database/cross_reference_manage.py  │ 3 new tables, catalog refresh, mention/edge CRUD                                          │
     ├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
-    │ database/__init__.py                																	│ Added cross-reference exports                                                             │
+    │ database/__init__.py                │ Added cross-reference exports                                                             │
     ├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
     │ database/database_manage.py         │ Wired create_cross_reference_tables() + init_graph_schema() into create_all_tables        │
     ├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
