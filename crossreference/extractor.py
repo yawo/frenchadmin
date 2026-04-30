@@ -82,22 +82,42 @@ def extract_article_mentions(text: str):
                 raw_end = raw_start + len(matched_raw)
                 end = raw_end
 
-            # Truncate at code boundary, stripping trailing French prepositions
-            code_match = _CODE_BOUNDARY_RE.search(text[raw_start:raw_end + 50])
-            if code_match and code_match.start() < (raw_end - raw_start):
-                end = raw_start + code_match.start()
-                matched_raw = text[raw_start:end]
-                lowered = matched_raw.lower()
-                for suffix in ["du ", "de ", "d'"]:
-                    if lowered.endswith(suffix):
-                        matched_raw = matched_raw[:-len(suffix)]
-                        break
-                end = raw_start + len(matched_raw)
-                # After truncation, validate that remaining text is still a valid article
-                matched_normalized = normalize_article_number(matched_raw)
-                if not matched_normalized:
-                    # Truncation destroyed the article structure; skip this boundary case
-                    continue
+            # Include code name when present after prepositions (du/de/d')
+            # Extract longer context to capture "1745 du COD" not just "1745"
+            lookahead_end = min(len(text), raw_end + 80)
+            lookahead = text[raw_start:lookahead_end]
+            
+            # Match: article_number [du/de/d'] [code_name or code_abbr]
+            code_abbr_match = re.match(
+                r'^(.+?)\s+(?:du|de|d[\'\s])\s*([A-Z]+\.?|[A-Za-z\s]+)',
+                lookahead,
+                re.IGNORECASE
+            )
+            if code_abbr_match:
+                # Include code name/abbr in extraction
+                full_article = code_abbr_match.group(0).strip()
+                end = raw_start + len(full_article)
+                matched_raw = full_article
+            else:
+                # No code name, check if we hit a code boundary and need to truncate
+                code_match = _CODE_BOUNDARY_RE.search(lookahead)
+                if code_match and code_match.start() < (raw_end - raw_start):
+                    end = raw_start + code_match.start()
+                    matched_raw = text[raw_start:end]
+                    lowered = matched_raw.lower()
+                    for suffix in ["du ", "de ", "d'"]:
+                        if lowered.endswith(suffix):
+                            matched_raw = matched_raw[:-len(suffix)]
+                            break
+                    end = raw_start + len(matched_raw)
+                    # After truncation, validate that remaining text is still a valid article
+                    matched_normalized = normalize_article_number(matched_raw)
+                    if not matched_normalized:
+                        # Truncation destroyed the article structure; skip this boundary case
+                        continue
+                else:
+                    matched_raw = text[raw_start:raw_end]
+                    end = raw_end
 
             matched = matched_raw.strip()
             if matched:

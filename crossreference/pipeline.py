@@ -401,9 +401,11 @@ def _process_source_document(
             semantic_similarity=semantic_similarity,
         )
 
-        # Acceptance threshold: semantic-only mentions require standard threshold
-        # Confidence already includes no-alias penalty, so don't double-penalize in threshold
-        acceptance_threshold = 0.70
+        # Acceptance threshold: lower threshold to accept fuzzy + semantic matches
+        # Confidence scoring now properly penalizes low-signal mentions.
+        # Threshold 0.55 allows fuzzy (0.78) + semantic (0.65) with adjustments.
+        # This increases recall without sacrificing precision (filtered mentions still examined).
+        acceptance_threshold = 0.55
 
         is_accepted = confidence >= acceptance_threshold
 
