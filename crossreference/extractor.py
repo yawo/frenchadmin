@@ -6,6 +6,7 @@ Two-step extraction:
 """
 
 import re
+import unicodedata
 
 
 # Single article token pattern
@@ -43,6 +44,14 @@ _CODE_BOUNDARY_RE = re.compile(
     )\b""",
     re.IGNORECASE | re.VERBOSE,
 )
+
+
+def remove_accents(text: str) -> str:
+    """Remove accents from text for matching."""
+    return ''.join(
+        c for c in unicodedata.normalize('NFD', text)
+        if unicodedata.category(c) != 'Mn'
+    )
 
 
 def extract_article_mentions(text: str):
@@ -98,7 +107,7 @@ def extract_article_mentions(text: str):
                 code_text = lookahead[code_start:]
                 
                 # Find known code boundary pattern or stop early
-                code_boundary_match = _CODE_BOUNDARY_RE.search(code_text)
+                code_boundary_match = _CODE_BOUNDARY_RE.search(remove_accents(code_text))
                 if code_boundary_match:
                     # Include matched code boundary
                     code_part = code_text[:code_boundary_match.end()].strip()
