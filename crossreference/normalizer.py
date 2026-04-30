@@ -20,6 +20,12 @@ _ANCHOR_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# Strip code name reference (du/de/d' followed by code name)
+_CODE_NAME_RE = re.compile(
+    r"\s+(?:du|de|d['\s])\s+(?:[a-zàâäæéèêëïîôöœùûüçœæ\s]+?)(?:\s*$|\s+(?:qui|que|qu'|c'est|,|;|\.|\)|$))",
+    re.IGNORECASE,
+)
+
 # Normalize spaces around hyphens and prefix-star
 _SPACE_HYPHEN_RE = re.compile(r"\s*-\s*")
 _PREFIX_STAR_SPACE_RE = re.compile(r"([LRDA])\s*\*\s*")
@@ -34,6 +40,8 @@ def normalize_article_number(raw: str) -> str:
         normalize_article_number("article R* 196-1") == "R*196-1"
         normalize_article_number("article 1012 ter A") == "1012 TER A"
         normalize_article_number("article 01 bis") == "1 BIS"
+        normalize_article_number("1745 du code général des impôts") == "1745"
+        normalize_article_number("L. 247 du livre des procédures fiscales") == "L. 247"
     """
     if not raw:
         return ""
@@ -42,6 +50,9 @@ def normalize_article_number(raw: str) -> str:
 
     # Strip leading anchors
     text = _ANCHOR_RE.sub("", text).strip()
+
+    # Strip code name reference (du/de code xyz)
+    text = _CODE_NAME_RE.sub("", text).strip()
 
     # Normalize unicode spaces
     text = unicodedata.normalize("NFKC", text)
