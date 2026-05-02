@@ -31,7 +31,7 @@ dependencies = [
     "apache-airflow-providers-apprise==2.1.2",
     "xxhash==3.5.0",
     "transformers==4.57.3",
-    "sentence-transformers==3.4.1",
+    "sentence-transformers==4.1.0",
     "falkordb==1.6.0"
 ]
 

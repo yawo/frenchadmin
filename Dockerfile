@@ -1,43 +1,46 @@
 FROM apache/airflow:3.0.3
 
-# Default user for Airflow
 ARG AIRFLOW_USER=airflow
 
-# Install system dependencies if needed
+# ── System dependencies ───────────────────────────────────────────────────────
+# This layer is only invalidated when requirements-apt-container.txt changes.
 USER root
 
-# Copy the system requirements file first
 COPY config/requirements-apt-container.txt /tmp/requirements-apt-container.txt
 
-RUN apt-get update && \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && \
     apt-get install -y $(grep -v '^#' /tmp/requirements-apt-container.txt | grep -v '^docker' | xargs) && \
-    rm -rf /var/lib/apt/lists/* && \
     rm /tmp/requirements-apt-container.txt
 
-# Back to the airflow user
+# ── Python dependencies ───────────────────────────────────────────────────────
+# Copy only pyproject.toml first. Docker caches this layer and only re-runs
+# pip install when pyproject.toml actually changes — not on every source edit.
 USER ${AIRFLOW_USER}
 
 ENV RUNNING_IN_DOCKER=true
 
-# Copy the entire project (context = root now)
-COPY . /tmp/mediatech/
-
-# Go to the project directory
 WORKDIR /tmp/mediatech
 
-# Check that pyproject.toml is accessible
-RUN ls -la pyproject.toml
+COPY pyproject.toml /tmp/mediatech/pyproject.toml
 
-# Change ownership of the directory to the user
+# Extract and install dependencies listed in pyproject.toml without the package itself.
+# pip install --no-deps is used later for the editable install so deps aren't re-resolved.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install $(python3 -c "import tomllib; f=open('pyproject.toml','rb'); deps=tomllib.load(f)['project']['dependencies']; f.close(); print(' '.join(deps))")
+
+# ── Application source code ───────────────────────────────────────────────────
+# Copied after pip install so editing source files does not bust the cache above.
 USER root
+COPY . /tmp/mediatech/
 RUN chown -R ${AIRFLOW_USER}:root /tmp/mediatech
 USER ${AIRFLOW_USER}
 
-# Install the package in editable mode
-RUN pip install --no-cache-dir -e .
+# Editable install of the package itself (deps already present, so this is fast).
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-deps -e .
 
-# Back to the Airflow home directory
+# ── Sanity check ──────────────────────────────────────────────────────────────
 WORKDIR /opt/airflow
-
-# Check that the command is available
 RUN mediatech --help

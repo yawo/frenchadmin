@@ -65,16 +65,25 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"  
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
     volumes:
       - pgvector_data:/var/lib/postgresql/data
       - ./database/sql_scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./database/sql_scripts/reset_mediatech.sh:/reset_mediatech.sh:ro
+    command: >
+      bash -c "
+        docker-entrypoint.sh postgres &
+        PG_PID=$$!
+        until pg_isready -U $$POSTGRES_USER; do sleep 1; done
+        bash /reset_mediatech.sh
+        wait $$PG_PID
+      "
 
   qdrant:
     image: qdrant/qdrant:v1.17-unprivileged
     container_name: qdrant_container
     healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:6333/healthz"]
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/6333 && echo -e 'GET /healthz HTTP/1.0\\r\\n\\r\\n' >&3 && sleep 1 && grep -q 'healthz check passed' <&3"]
       interval: 10s
       retries: 10
       start_period: 30s
@@ -97,8 +106,19 @@ services:
     restart: always
     ports:
       - "127.0.0.1:${FALKORDB_PORT:-6379}:6379"
+      - "127.0.0.1:3000:3000"
     volumes:
       - falkordb_data:/data
+    command: >
+      sh -c "
+        if [ -n \"$$FALKORDB_PASSWORD\" ]; then
+          redis-server --requirepass \"$$FALKORDB_PASSWORD\"
+        else
+          redis-server
+        fi
+      "
+    environment:
+      FALKORDB_PASSWORD: ${FALKORDB_PASSWORD:-}
 
   airflow-apiserver:
     <<: *airflow-common

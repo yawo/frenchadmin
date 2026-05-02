@@ -145,8 +145,8 @@ def generate_embeddings(
     if isinstance(data, str):
         data = [data]
     embedding_model = _get_embedding_model(model)
-    vectors = embedding_model.encode(data, convert_to_numpy=False)
-    return [v if isinstance(v, list) else list(v) for v in vectors]
+    vectors = embedding_model.encode(data, convert_to_numpy=True)
+    return [v.tolist() for v in vectors]
 
 
 def generate_embeddings_with_retry(
