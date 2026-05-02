@@ -76,8 +76,8 @@ services:
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:6333/healthz"]
       interval: 10s
-      retries: 5
-      start_period: 10s
+      retries: 10
+      start_period: 30s
     restart: always
     environment:
       QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
