@@ -20,6 +20,10 @@ from crossreference.fuzzy_resolver import fuzzy_resolve
 from crossreference.semantic_resolver import semantic_resolve
 
 TAX_CORE_FAMILIES = {"CGI", "LPF", "CIBS"}
+# Deterministic preference ordering when multiple candidates survive and no
+# explicit code family was detected. Core tax families come first (by spec
+# §2.2), then OTHER_CODE, then unclassified rows. Used by _resolve_ambiguity.
+_FAMILY_PREFERENCE = {"CGI": 0, "LPF": 1, "CIBS": 2, "OTHER_CODE": 3}
 
 
 def resolve_article(
@@ -227,40 +231,46 @@ def _resolve_ambiguity(rows, detected_family: str, use_loose: bool) -> Optional[
 
     Ranked preferences:
     1. prefer exact family match over inferred family
-    2. prefer non-loose hit over loose
-    3. if tie remains, reject rather than guess
+    2. when no family is detected, prefer core tax families (CGI, LPF, CIBS)
+       over OTHER_CODE, and OTHER_CODE over NULL
+    3. if tie remains at the chosen preference tier, reject rather than guess
     """
     if detected_family:
-        # Prefer rows with matching code_family (code_family is at index 3)
         family_rows = [r for r in rows if r[3] == detected_family]
         if len(family_rows) == 1:
-            row = family_rows[0]
-            (legi_doc_id, parent_text_id, article_number, code_family, 
-             start_date, end_date) = row
-            return {
-                "target_legi_doc_id": legi_doc_id,
-                "target_parent_text_id": parent_text_id,
-                "target_article_number": article_number,
-                "target_start_date": start_date,
-                "target_end_date": end_date,
-            }
-        elif len(family_rows) > 1:
-            rows = family_rows  # narrow to family subset
+            return _row_to_result(family_rows[0])
+        if len(family_rows) > 1:
+            rows = family_rows
 
     if len(rows) == 1:
-        row = rows[0]
-        (legi_doc_id, parent_text_id, article_number, code_family, 
-         start_date, end_date) = row
-        return {
-            "target_legi_doc_id": legi_doc_id,
-            "target_parent_text_id": parent_text_id,
-            "target_article_number": article_number,
-            "target_start_date": start_date,
-            "target_end_date": end_date,
-        }
+        return _row_to_result(rows[0])
 
-    # Tie remains — reject
+    if len(rows) > 1 and not detected_family:
+        # Pick the best family tier available; only accept if it contains
+        # exactly one row, otherwise reject rather than guess between codes.
+        best_tier = min(
+            (_FAMILY_PREFERENCE.get(r[3], 99) for r in rows),
+            default=99,
+        )
+        tier_rows = [
+            r for r in rows if _FAMILY_PREFERENCE.get(r[3], 99) == best_tier
+        ]
+        if len(tier_rows) == 1:
+            return _row_to_result(tier_rows[0])
+
     return None
+
+
+def _row_to_result(row) -> dict:
+    (legi_doc_id, parent_text_id, article_number, _code_family,
+     start_date, end_date) = row
+    return {
+        "target_legi_doc_id": legi_doc_id,
+        "target_parent_text_id": parent_text_id,
+        "target_article_number": article_number,
+        "target_start_date": start_date,
+        "target_end_date": end_date,
+    }
 
 
 def _family_prior_resolve(
