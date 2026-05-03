@@ -55,6 +55,10 @@ _EXTENDED_ALIAS_CACHE = {
     "loaded_at": 0.0,
     "aliases": {},
 }
+# Defensive upper bound: catalog code_label values should be leading legal-text
+# labels (typically <60 chars). Anything longer signals a catalog regression
+# and must not pollute the alias map (§5.2).
+_EXTENDED_ALIAS_MAX_LEN = 80
 
 
 def _normalize_for_alias(text: str) -> str:
@@ -126,6 +130,9 @@ def _load_extended_aliases_from_catalog() -> dict[str, list[str]]:
             continue
         normalized_label = _normalize_for_alias(code_label)
         if not normalized_label:
+            continue
+        if len(normalized_label) > _EXTENDED_ALIAS_MAX_LEN:
+            # Catalog regression safeguard: refuse noisy 100+ char aliases.
             continue
         alias_map[normalized_label].add(parent_text_id)
 
