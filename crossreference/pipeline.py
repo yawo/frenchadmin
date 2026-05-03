@@ -342,8 +342,12 @@ def _process_source_document(
     for chunk in chunks:
         extraction_text = chunk["extraction_text"]
         chunk_text = chunk["chunk_text"] or extraction_text
-        for matched_text, match_start, match_end, context_window in extract_article_mentions(extraction_text):
-            normalized = normalize_article_number(matched_text)
+        for (matched_text, article_token, match_start, match_end,
+             context_window) in extract_article_mentions(extraction_text):
+            # Normalize from the clean article_token, not the rich matched_text.
+            # matched_text still carries the code-name tail for provenance and
+            # for alias_detector.extract_code_family_from_mention.
+            normalized = normalize_article_number(article_token)
             semantic_context = context_window
             if source_type == "bofip":
                 semantic_context = _enrich_bofip_context(context_window, chunk_text)
@@ -351,6 +355,7 @@ def _process_source_document(
                 "source_chunk_id": chunk["chunk_id"],
                 "source_chunk_index": chunk["chunk_index"],
                 "matched_text": matched_text,
+                "article_token": article_token,
                 "match_start": match_start,
                 "match_end": match_end,
                 "context_window": semantic_context,
