@@ -3,6 +3,12 @@
 Centralizing these guarantees extractor and normalizer agree on what
 constitutes an article token and on which prepositions introduce the
 code-name tail.
+
+IGNORECASE is applied globally, so the ``L.O.`` / ``[LRDA]`` prefix and the
+French ordinal alternation (bis, ter, quater, ...) accept any case. The
+letter-suffix tail ``[A-Z]{1,3}`` is wrapped in ``(?-i:...)`` to stay strictly
+uppercase; this prevents lowercase French words (``du``, ``de``, ``cod``,
+``liv``, ``et``) from being absorbed as fake suffixes.
 """
 
 import re
@@ -12,14 +18,14 @@ ARTICLE_TOKEN_RE = re.compile(
     r"""
     (?:
         (?:L\.O\.|[LRDA])(?:\*)?\s*[-.]?\s*\d+(?:-\d+)*
-        (?:\s+[A-Z]{1,3})*
+        (?:\s+(?-i:[A-Z]{1,3}))*
         (?:\s+(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies|undecies|duodecies|terdecies|quaterdecies|quindecies|sexdecies|septdecies|octodecies|novodecies|vicies)|(?:er|ère|ers))?
-        (?:\s+[A-Z]{1,3})*
+        (?:\s+(?-i:[A-Z]{1,3}))*
         |
         \d+(?:-\d+)*
-        (?:\s+[A-Z]{1,3})*
+        (?:\s+(?-i:[A-Z]{1,3}))*
         (?:\s+(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies|undecies|duodecies|terdecies|quaterdecies|quindecies|sexdecies|septdecies|octodecies|novodecies|vicies)|(?:er|ère|ers))?
-        (?:\s+[A-Z]{1,3})*
+        (?:\s+(?-i:[A-Z]{1,3}))*
     )
     """,
     re.IGNORECASE | re.VERBOSE,
