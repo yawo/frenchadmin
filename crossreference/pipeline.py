@@ -290,6 +290,18 @@ def _aggregate_bofip_documents() -> list[dict]:
 
 
 def _get_source_chunks(source_type: str, doc_id: str) -> list[dict]:
+    """Fetch chunk-level rows for a source document.
+
+    extraction_text is the field the regex extractor reads. Per
+    CROSSREFERENCE.md §6.1 / §6.2:
+    - JADE stores the full body in ``text`` and duplicates it per chunk row,
+      so we MUST use ``chunk_text`` (per-chunk, title + chunk slice) for
+      regex extraction. Otherwise every JADE mention is duplicated across
+      every chunk of the decision and the resulting offsets are
+      document-global instead of chunk-local.
+    - BOFIP stores per-chunk raw content in ``text``; ``chunk_text`` is the
+      enriched embedding form. We keep ``text`` for extraction.
+    """
     with get_connection() as conn:
         cursor = conn.cursor()
         if source_type == "jade":
@@ -302,16 +314,25 @@ def _get_source_chunks(source_type: str, doc_id: str) -> list[dict]:
                 """,
                 (doc_id,),
             )
-        else:
-            cursor.execute(
-                """
-                SELECT chunk_id, chunk_index, text, chunk_text
-                FROM bofip
-                WHERE doc_id = %s
-                ORDER BY chunk_index
-                """,
-                (doc_id,),
-            )
+            return [
+                {
+                    "chunk_id": row[0],
+                    "chunk_index": row[1],
+                    "extraction_text": row[3] or "",
+                    "chunk_text": row[3] or "",
+                }
+                for row in cursor.fetchall()
+            ]
+
+        cursor.execute(
+            """
+            SELECT chunk_id, chunk_index, text, chunk_text
+            FROM bofip
+            WHERE doc_id = %s
+            ORDER BY chunk_index
+            """,
+            (doc_id,),
+        )
         return [
             {
                 "chunk_id": row[0],
