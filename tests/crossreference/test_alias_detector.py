@@ -29,10 +29,62 @@ def test_infer_code_family_core_lpf():
 
 
 def test_extract_code_family_from_mention_core():
-    assert extract_code_family_from_mention("1745 du code général des impôts") == "CGI"
-    assert extract_code_family_from_mention(
+    family, parents = extract_code_family_from_mention(
+        "1745 du code général des impôts"
+    )
+    assert family == "CGI"
+    assert "LEGITEXT000006069577" in parents
+
+    family, parents = extract_code_family_from_mention(
         "L. 247 du livre des procédures fiscales"
-    ) == "LPF"
+    )
+    assert family == "LPF"
+    assert parents == ["LEGITEXT000006069583"]
+
+
+def test_extract_code_family_from_mention_unknown_returns_none():
+    family, parents = extract_code_family_from_mention("article unrelated text")
+    assert family is None
+    assert parents == []
+
+
+def test_extract_code_family_from_mention_other_code_returns_parents(monkeypatch):
+    """A5 regression: when a non-core code is detected from matched_text,
+    parent_text_ids must accompany the OTHER_CODE family so the resolver's
+    fuzzy / semantic scopes do not silently revert to tax core."""
+    invalidate_extended_alias_cache()
+
+    class _FakeCursor:
+        def execute(self, sql):
+            self._rows = [
+                ("LEGITEXT000006072050", "code du travail"),
+            ]
+
+        def fetchall(self):
+            return self._rows
+
+    class _FakeConn:
+        def cursor(self):
+            return _FakeCursor()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    monkeypatch.setattr(
+        "database.database_manage.get_connection",
+        lambda: _FakeConn(),
+    )
+
+    family, parents = extract_code_family_from_mention(
+        "L. 1242-1 du code du travail"
+    )
+    assert family == "OTHER_CODE"
+    assert parents == ["LEGITEXT000006072050"]
+
+    invalidate_extended_alias_cache()
 
 
 def test_infer_code_family_unknown_returns_none():

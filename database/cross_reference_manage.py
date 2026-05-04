@@ -102,6 +102,12 @@ def _ensure_source_state_columns(cursor):
         ADD COLUMN IF NOT EXISTS graph_sync_ok BOOLEAN NOT NULL DEFAULT false
         """
     )
+    cursor.execute(
+        """
+        ALTER TABLE cross_reference_source_state
+        ADD COLUMN IF NOT EXISTS pipeline_version TEXT NOT NULL DEFAULT ''
+        """
+    )
     _SOURCE_STATE_COLUMNS_ENSURED = True
 
 
@@ -229,6 +235,7 @@ def create_cross_reference_tables():
                 source_doc_id TEXT NOT NULL,
                 source_hash TEXT NOT NULL,
                 catalog_hash TEXT NOT NULL DEFAULT '',
+                pipeline_version TEXT NOT NULL DEFAULT '',
                 graph_sync_ok BOOLEAN NOT NULL DEFAULT false,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 PRIMARY KEY (source_type, source_doc_id)
@@ -244,6 +251,12 @@ def create_cross_reference_tables():
             """
             ALTER TABLE cross_reference_source_state
             ADD COLUMN IF NOT EXISTS graph_sync_ok BOOLEAN NOT NULL DEFAULT false
+            """
+        )
+        cursor.execute(
+            """
+            ALTER TABLE cross_reference_source_state
+            ADD COLUMN IF NOT EXISTS pipeline_version TEXT NOT NULL DEFAULT ''
             """
         )
         cursor.execute("""
@@ -495,7 +508,7 @@ def get_source_state(cursor, source_type, source_doc_id):
     _ensure_source_state_columns(cursor)
     cursor.execute(
         """
-        SELECT source_hash, catalog_hash, graph_sync_ok
+        SELECT source_hash, catalog_hash, graph_sync_ok, pipeline_version
         FROM cross_reference_source_state
         WHERE source_type = %s AND source_doc_id = %s
         """,
@@ -508,6 +521,7 @@ def get_source_state(cursor, source_type, source_doc_id):
         "source_hash": row[0],
         "catalog_hash": row[1] or "",
         "graph_sync_ok": bool(row[2]),
+        "pipeline_version": row[3] or "",
     }
 
 
@@ -526,21 +540,31 @@ def upsert_source_state_hash(
     source_hash,
     catalog_hash="",
     graph_sync_ok=False,
+    pipeline_version="",
 ):
     """Upsert source hash after a successful per-document rebuild."""
     _ensure_source_state_columns(cursor)
     cursor.execute(
         """
         INSERT INTO cross_reference_source_state (
-            source_type, source_doc_id, source_hash, catalog_hash, graph_sync_ok, updated_at
-        ) VALUES (%s, %s, %s, %s, %s, NOW())
+            source_type, source_doc_id, source_hash, catalog_hash,
+            pipeline_version, graph_sync_ok, updated_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, NOW())
         ON CONFLICT (source_type, source_doc_id) DO UPDATE SET
             source_hash = EXCLUDED.source_hash,
             catalog_hash = EXCLUDED.catalog_hash,
+            pipeline_version = EXCLUDED.pipeline_version,
             graph_sync_ok = EXCLUDED.graph_sync_ok,
             updated_at = NOW()
         """,
-        (source_type, source_doc_id, source_hash, catalog_hash, graph_sync_ok),
+        (
+            source_type,
+            source_doc_id,
+            source_hash,
+            catalog_hash,
+            pipeline_version,
+            graph_sync_ok,
+        ),
     )
 
 
@@ -733,30 +757,47 @@ def _get_admin_connection():
     )
 
 
-def clean_cross_reference_data(source: str = "all"):
+def clean_cross_reference_data(source: str = "all", reset_catalog: bool = False):
     """Clean cross-reference tables for one or all sources to force reprocessing.
-    
+
     Removes:
     - cross_reference_legi_mentions for source
     - cross_reference_legi_edges for source
     - cross_reference_source_state for source
-    
+
+    When ``reset_catalog`` is true and ``source == 'all'``, also truncates
+    ``legi_reference_catalog`` so the next ``infer_crossreferences`` run
+    rebuilds it from scratch. The catalog is content-addressed by
+    ``catalog_hash``, so a rebuild from identical LEGI data produces the
+    same hash; this option is useful only when the catalog content itself
+    is suspected to be corrupt.
+
     Args:
         source: 'jade', 'bofip', or 'all'
+        reset_catalog: also TRUNCATE legi_reference_catalog (only valid
+            when source == 'all').
     """
     if source not in ("jade", "bofip", "all"):
         raise ValueError(f"Invalid source: {source}. Use jade, bofip, or all.")
-    
+    if reset_catalog and source != "all":
+        raise ValueError(
+            "reset_catalog=True is only valid when source='all'; pass --all "
+            "or omit reset_catalog."
+        )
+
     conn = None
     try:
         conn = _get_admin_connection()
         cursor = conn.cursor()
-        
+
         if source == "all":
             logger.info("Cleaning ALL cross-reference data (jade and bofip)")
             cursor.execute("DELETE FROM cross_reference_legi_mentions")
             cursor.execute("DELETE FROM cross_reference_legi_edges")
             cursor.execute("DELETE FROM cross_reference_source_state")
+            if reset_catalog:
+                logger.info("Truncating legi_reference_catalog")
+                cursor.execute("TRUNCATE TABLE legi_reference_catalog")
         else:
             logger.info(f"Cleaning cross-reference data for source={source}")
             cursor.execute(
@@ -771,22 +812,24 @@ def clean_cross_reference_data(source: str = "all"):
                 "DELETE FROM cross_reference_source_state WHERE source_type = %s",
                 (source,)
             )
-        
+
         conn.commit()
-        
-        # Log results
+
         cursor.execute("SELECT COUNT(*) FROM cross_reference_legi_mentions")
         mentions_count = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM cross_reference_legi_edges")
         edges_count = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM cross_reference_source_state")
         state_count = cursor.fetchone()[0]
-        
+        cursor.execute("SELECT COUNT(*) FROM legi_reference_catalog")
+        catalog_count = cursor.fetchone()[0]
+
         logger.info(
             f"Clean complete: {mentions_count} mentions remaining, "
-            f"{edges_count} edges remaining, {state_count} state entries remaining"
+            f"{edges_count} edges remaining, {state_count} state entries remaining, "
+            f"{catalog_count} catalog rows remaining"
         )
-        
+
     except Exception as e:
         logger.error(f"Error cleaning cross-reference data: {e}")
         if conn:

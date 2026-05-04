@@ -187,30 +187,39 @@ def get_family_aliases(family: str) -> list[str]:
     return list(info["aliases"])
 
 
-def extract_code_family_from_mention(mention_text: str) -> str | None:
-    """Extract code family from mention text.
-    
-    E.g. "1745 du code général des impôts" -> "CGI"
-         "L. 247 du livre des procédures fiscales" -> "LPF"
-    
+def extract_code_family_from_mention(mention_text: str):
+    """Extract code family + parent_text_ids from a mention's matched_text.
+
+    Mirrors :func:`infer_code_family` but operates on the (typically shorter)
+    matched_text rather than the surrounding context window. Returns the
+    parent_text_ids alongside the family so the resolver can scope catalog
+    queries to a concrete LEGITEXT family even for non-core (OTHER_CODE)
+    mentions — without this, an OTHER_CODE detection produced an empty
+    parent list and downstream fuzzy / semantic fallbacks reverted to the
+    tax-core scope (CGI/LPF/CIBS), which is wrong for non-core citations.
+
+    E.g.:
+        "1745 du code général des impôts"     -> ("CGI",        [...CGI parents...])
+        "L. 247 du livre des procédures fiscales" -> ("LPF",     ["LEGITEXT...006069583"])
+        "L. 1242-1 du code du travail"        -> ("OTHER_CODE", [<code du travail parent ids>])
+        "no match"                            -> (None, [])
+
     Returns:
-        family name (e.g. "CGI", "LPF") or None if not detected.
+        (family_name, list_of_parent_text_ids).
     """
     if not mention_text:
-        return None
-    
+        return None, []
+
     normalized = _normalize_for_alias(mention_text)
-    
-    # Try core aliases first (longest first for specificity)
+
     for norm_alias in _SORTED_CORE_ALIASES:
         if _alias_in_text(norm_alias, normalized):
-            family, _, _ = _ALIAS_TO_FAMILY[norm_alias]
-            return family
-    
-    # Try extended aliases
+            family, _, parent_ids = _ALIAS_TO_FAMILY[norm_alias]
+            return family, list(parent_ids)
+
     extended_aliases = _get_extended_aliases()
     for alias in sorted(extended_aliases.keys(), key=len, reverse=True):
         if _alias_in_text(alias, normalized):
-            return "OTHER_CODE"
-    
-    return None
+            return "OTHER_CODE", list(extended_aliases[alias])
+
+    return None, []

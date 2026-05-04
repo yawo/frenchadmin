@@ -25,6 +25,7 @@ from database.cross_reference_manage import (
     refresh_legi_reference_catalog,
     upsert_source_state_hash,
 )
+from crossreference._version import PIPELINE_VERSION
 from database.graph_manage import init_graph_schema, inject_cross_reference_edges
 from crossreference.alias_detector import invalidate_extended_alias_cache
 from crossreference.extractor import extract_article_mentions
@@ -95,13 +96,18 @@ def infer_crossreferences(
             doc_started = time.perf_counter()
 
             try:
-                # Check incremental: skip if hash unchanged
+                # Check incremental: skip when source content, catalog content,
+                # AND inference pipeline version are all unchanged. Bumping
+                # PIPELINE_VERSION on any extractor/resolver/normalizer change
+                # invalidates every stored state row at deploy time, forcing a
+                # full reprocess even when LEGI and JADE/BOFIP have not moved.
                 current_hash = doc_info["source_hash"]
                 stored_state = _get_stored_state(src, doc_info["doc_id"])
                 hashes_match = (
                     stored_state
                     and stored_state["source_hash"] == current_hash
                     and stored_state["catalog_hash"] == catalog_hash
+                    and stored_state.get("pipeline_version") == PIPELINE_VERSION
                 )
                 if hashes_match and stored_state.get("graph_sync_ok"):
                     logger.debug(f"Skipping {src} doc {doc_info['doc_id']}: hash unchanged")
@@ -221,6 +227,7 @@ def _upsert_source_state(
             source_hash,
             catalog_hash=catalog_hash,
             graph_sync_ok=graph_sync_ok,
+            pipeline_version=PIPELINE_VERSION,
         )
         conn.commit()
 
@@ -290,6 +297,18 @@ def _aggregate_bofip_documents() -> list[dict]:
 
 
 def _get_source_chunks(source_type: str, doc_id: str) -> list[dict]:
+    """Fetch chunk-level rows for a source document.
+
+    extraction_text is the field the regex extractor reads. Per
+    CROSSREFERENCE.md §6.1 / §6.2:
+    - JADE stores the full body in ``text`` and duplicates it per chunk row,
+      so we MUST use ``chunk_text`` (per-chunk, title + chunk slice) for
+      regex extraction. Otherwise every JADE mention is duplicated across
+      every chunk of the decision and the resulting offsets are
+      document-global instead of chunk-local.
+    - BOFIP stores per-chunk raw content in ``text``; ``chunk_text`` is the
+      enriched embedding form. We keep ``text`` for extraction.
+    """
     with get_connection() as conn:
         cursor = conn.cursor()
         if source_type == "jade":
@@ -302,16 +321,25 @@ def _get_source_chunks(source_type: str, doc_id: str) -> list[dict]:
                 """,
                 (doc_id,),
             )
-        else:
-            cursor.execute(
-                """
-                SELECT chunk_id, chunk_index, text, chunk_text
-                FROM bofip
-                WHERE doc_id = %s
-                ORDER BY chunk_index
-                """,
-                (doc_id,),
-            )
+            return [
+                {
+                    "chunk_id": row[0],
+                    "chunk_index": row[1],
+                    "extraction_text": row[3] or "",
+                    "chunk_text": row[3] or "",
+                }
+                for row in cursor.fetchall()
+            ]
+
+        cursor.execute(
+            """
+            SELECT chunk_id, chunk_index, text, chunk_text
+            FROM bofip
+            WHERE doc_id = %s
+            ORDER BY chunk_index
+            """,
+            (doc_id,),
+        )
         return [
             {
                 "chunk_id": row[0],
@@ -376,7 +404,8 @@ def _process_source_document(
     mentions = []
     for raw in raw_mentions:
         result = resolve_article(
-            raw_article_text=raw["matched_text"],
+            article_token=raw["article_token"],
+            matched_text=raw["matched_text"],
             source_date=source_date,
             context_text=raw["context_window"],
             source_type=source_type,
