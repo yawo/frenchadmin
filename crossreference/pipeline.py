@@ -376,7 +376,8 @@ def _process_source_document(
     mentions = []
     for raw in raw_mentions:
         result = resolve_article(
-            raw_article_text=raw["matched_text"],
+            article_token=raw["article_token"],
+            matched_text=raw["matched_text"],
             source_date=source_date,
             context_text=raw["context_window"],
             source_type=source_type,
