@@ -165,6 +165,23 @@ Implication for new inferred links:
 Implication:
 - the future cross-reference implementation should call `init_graph_schema()` before graph backfill or during startup / `create_tables`
 
+### 1.8 LEGI ingestion peculiarities the catalog must account for
+
+`download_and_processing/files_processing.py` builds:
+- `legi.title` = the deepest `<TITRE_TM>` (the most specific subtitle, often
+  not starting with `Code ` / `Livre `);
+- `legi.full_title` = `<TITRE_TXT>` text **plus** the entire subtitle chain
+  (e.g. `Code de commerce Partie législative - LIVRE Ier : ...`).
+
+Implications:
+- a naive `code_label = full_title` produces 75k+ unique 200-char chains;
+  this destroys the extended alias map and must NOT happen (§5.2);
+- `code_label` extraction MUST strip back to the leading legal-text label
+  before any `" - "`, `", annexe"`, `" Partie "`, `" LIVRE "`, `" TITRE "`,
+  `" CHAPITRE "`, `" Section "`, `" Sous-section "` boundary;
+- `legi.category` may also point to `JORFTEXT…` parents (decrees / laws);
+  these MUST be filtered out at catalog build time (§4.1, §17 rule 11).
+
 ---
 
 ## 2. Scope
@@ -340,7 +357,7 @@ CREATE INDEX IF NOT EXISTS idx_legi_ref_catalog_family
 Refresh source:
 
 ```sql
-SELECT DISTINCT
+SELECT DISTINCT ON (doc_id)
     doc_id,
     category,
     number,
@@ -348,8 +365,22 @@ SELECT DISTINCT
     full_title,
     start_date::date,
     end_date::date
-FROM legi;
+FROM legi
+WHERE category LIKE 'LEGITEXT%'
+ORDER BY
+    doc_id,
+    (number IS NULL),
+    (category IS NULL),
+    (title IS NULL),
+    (full_title IS NULL),
+    start_date::date DESC,
+    end_date::date DESC;
 ```
+
+The `WHERE category LIKE 'LEGITEXT%'` filter is mandatory: only article-level
+`LEGITEXT…` parents are valid resolution targets (see §1.6 and §13.4).
+`JORFTEXT…`-parented rows are decree / law parent texts and must never become
+inferred edge targets.
 
 ### 4.2 `cross_reference_legi_mentions`
 
@@ -455,32 +486,53 @@ Each catalog row represents one versioned LEGI article:
 
 ### 5.2 `code_label`
 
-Infer `code_label` from `title` or `full_title`.
+`code_label` must be the **stable leading legal-text label** (e.g.
+`Code de commerce`, `Code général des impôts`). It must NOT contain the
+subtitle chain that LEGI ingestion concatenates into `full_title`.
 
 Rules:
-- if `title` starts with `Code ` or `Livre `, use `title`
-- else if `full_title` starts with `Code ` or `Livre `, extract the stable leading legal-text label
-- else leave null
+- if `title` starts with `Code ` or `Livre ` (case-insensitive), use `title`,
+  trimmed of trailing punctuation;
+- else, if `full_title` starts with `Code ` or `Livre `, extract the prefix up
+  to the first of these boundary markers and trim:
+  `" - "`, `", annexe"`, `" Partie "`, `" LIVRE "`, `" TITRE "`,
+  `" CHAPITRE "`, `" Section "`, `" Sous-section "` (and their lowercase
+  variants);
+- else leave null. In particular, decrees / laws (`JORFTEXT…`-parented rows
+  in `legi`, or rows whose title starts with `Loi `, `Décret `, `Ordonnance `)
+  must produce `code_label = NULL`. Those rows are out of scope for v1 (§2.4)
+  and the catalog refresh already excludes them via `category LIKE 'LEGITEXT%'`
+  (§4.1).
 
-Examples seen in live data:
-- `Code general des impots`
-- `Code general des impots, annexe I`
-- `Code general des impots, annexe II`
-- `Code general des impots, annexe III`
-- `Code general des impots, annexe IV`
-- `Livre des procedures fiscales`
+Examples (from live data):
+- `Code général des impôts` (regardless of which annexe parent the row uses)
+- `Livre des procédures fiscales`
 - `Code des impositions sur les biens et services`
+- `Code de commerce`
+- `Code du travail`
+- `Code de l'urbanisme`
+
+Reference implementation: `database.cross_reference_manage._extract_leading_code_label`.
 
 ### 5.3 `code_family`
 
-Classify known core families:
-- `CGI`
-- `LPF`
-- `CIBS`
+`code_family` is a closed enum:
 
-Everything else can use:
-- `OTHER_CODE`
-- or null if not a code family
+```
+{ "CGI", "LPF", "CIBS", "OTHER_CODE", NULL }
+```
+
+Rules:
+- if `category` is one of `CODE_FAMILY_MAP[fam].parent_text_ids` for
+  `fam ∈ {CGI, LPF, CIBS}`, set `code_family = fam`;
+- else, if `code_label` is non-null (i.e. the row is a `Code …` / `Livre …`
+  outside the tax core), set `code_family = "OTHER_CODE"`;
+- else, leave `code_family = NULL`.
+
+Free-text values (e.g. `"Code civil"`, `"Code de commerce"`) MUST NOT be
+written into this column. The resolver and alias detector only ever emit
+values inside the closed enum, so any other value would be invisible to
+ambiguity resolution and to family-prior fallbacks.
 
 ### 5.4 Alias generation
 
@@ -657,7 +709,7 @@ Extraction should be two-step:
 The parser must support at least:
 - numeric article numbers
 - numeric + hyphen chains
-- letter prefixes such as `L`, `R`, `D`, `A`
+- letter prefixes such as `L`, `R`, `D`, `A` (plus `L.O.`)
 - optional star after prefix, such as `R*`
 - spaced suffix letters such as `A`, `B`, `AA`, `ZH`
 - French ordinal suffixes such as `bis`, `ter`, `quater`, `quinquies`, `sexies`, `septies`, `octies`, `nonies`, `decies`, `undecies`, `duodecies`, `terdecies`
@@ -667,20 +719,58 @@ Minimal extraction regex for a single token:
 ```python
 ARTICLE_TOKEN_RE = re.compile(
     r"""
-    (?ix)
     (?:
-        [LRDA](?:\*)?\s*[-.]?\s*\d+(?:-\d+)*(?:\s+[A-Z]{1,3})*(?:\s+(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies|undecies|duodecies|terdecies|quaterdecies|quindecies|sexdecies|septdecies|octodecies|novodecies|vicies))?(?:\s+[A-Z]{1,3})*
+        (?:L\.O\.|[LRDA])(?:\*)?\s*[-.]?\s*\d+(?:-\d+)*
+        (?:\s+(?-i:[A-Z]{1,3}))*
+        (?:\s+(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies|undecies|duodecies|terdecies|quaterdecies|quindecies|sexdecies|septdecies|octodecies|novodecies|vicies)|(?:er|ère|ers))?
+        (?:\s+(?-i:[A-Z]{1,3}))*
         |
-        \d+(?:-\d+)*(?:\s+[A-Z]{1,3})*(?:\s+(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies|undecies|duodecies|terdecies|quaterdecies|quindecies|sexdecies|septdecies|octodecies|novodecies|vicies))?(?:\s+[A-Z]{1,3})*
+        \d+(?:-\d+)*
+        (?:\s+(?-i:[A-Z]{1,3}))*
+        (?:\s+(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies|undecies|duodecies|terdecies|quaterdecies|quindecies|sexdecies|septdecies|octodecies|novodecies|vicies)|(?:er|ère|ers))?
+        (?:\s+(?-i:[A-Z]{1,3}))*
     )
-    """
+    """,
+    re.IGNORECASE | re.VERBOSE,
 )
 ```
+
+Critical: the alpha-tail groups MUST be locally case-sensitive
+(`(?-i:[A-Z]{1,3})`). Otherwise, under `re.IGNORECASE`, lowercase French
+words (`du`, `de`, `cod`, `liv`, `et`) get absorbed as fake suffixes and
+contaminate the article token. Centralise the pattern in a single shared
+module (e.g. `crossreference._patterns`) so the extractor and normalizer
+agree on what counts as a valid article token.
 
 Do not rely on this regex alone. Wrap it in parser logic that also handles:
 - enumerations separated by `,`, `et`, `ou`
 - patterns like `articles 38, 39 et 39 A`
 - patterns like `article 150-0 A du CGI`
+
+### 7.7 Extractor output contract
+
+`extract_article_mentions(text)` MUST yield, per mention:
+
+```
+(matched_text, article_token, start, end, context_window)
+```
+
+Where:
+- `matched_text` is the rich human-readable span. It may include a trailing
+  code-name clause introduced by a French preposition
+  (`du`, `des`, `de la`, `de l'`, `au`, `aux`, `de`). Stored on the mention
+  row for provenance and fed to `extract_code_family_from_mention`.
+- `article_token` is the **clean article span** (just the article number,
+  letter prefix, star, suffix, ordinal). It is the canonical input for
+  `normalize_article_number` and is the only field the resolver SHOULD use
+  for catalog lookup.
+- `context_window` is ~200 chars around the match for alias detection and
+  semantic fallback.
+
+The preposition regex used to extend `matched_text` MUST recognise the full
+set above. In particular, `de l'annexe II` must be consumed as one
+preposition unit so the stray `l` does not leak into the article portion
+(this was the cause of the `"238 du l annexe II ..."` bug in v0).
 
 ---
 
@@ -700,13 +790,23 @@ Purpose:
 - exact deterministic lookup
 
 Rules:
-- uppercase
-- strip leading `article`, `articles`, `art.`
-- normalize Unicode spaces
+- strip leading anchors (`article`, `articles`, `art.`, `art`, `n°`)
+- normalize Unicode spaces (NFKC)
 - normalize repeated whitespace to one space
+- **strip the trailing code-name clause**: drop a `\s+(?:du|des|de\s+la|de\s+l['’\s]|au|aux|de)\s+.+$` suffix WHEN the prefix before the
+  preposition is a valid `ARTICLE_TOKEN_RE` match. This is what makes
+  `normalize_article_number("1745 du code général des impôts")` collapse to
+  `"1745"` so it can match the catalog key. Do not strip when the prefix is
+  not a valid article token, or when the segment after the preposition is
+  purely numeric (defensive guard).
+- collapse `<letter> .? <space>+ <digit>` → `<letter><digit>`, e.g.
+  `L. 247` → `L247`, `L 53` → `L53`. Preserve `R*196-1` (the star branch is
+  excluded). This aligns mention keys with LEGI's stored convention
+  (`L123-3`, never `L. 123-3`).
 - remove spaces around hyphens
-- remove spaces between prefix and star:
-  - `R* 196-1` -> `R*196-1`
+- remove spaces between prefix and star: `R* 196-1` → `R*196-1`
+- uppercase
+- remove leading zeros from a purely numeric leading head (`01 BIS` → `1 BIS`)
 - keep hyphens
 - keep `*`
 - keep suffix words like `BIS`, `TER`
@@ -718,7 +818,20 @@ normalize_article_number("art. 150-0 A") == "150-0 A"
 normalize_article_number("article R* 196-1") == "R*196-1"
 normalize_article_number("article 1012 ter A") == "1012 TER A"
 normalize_article_number("article 01 bis") == "1 BIS"
+
+# Trailing code-name clause must be stripped:
+normalize_article_number("1745 du code général des impôts") == "1745"
+normalize_article_number("L. 247 du livre des procédures fiscales") == "L247"
+normalize_article_number("238 de l'annexe II au code général des impôts") == "238"
+normalize_article_number("L. 1242-1 du code du travail") == "L1242-1"
+normalize_article_number("article R*196-1 du LPF") == "R*196-1"
 ```
+
+The rule "extractor provides `article_token`; normalizer cleans it; both keys
+match the catalog" is non-negotiable. Storing a `normalized_number` that
+contains the code-name tail (as v0 did) breaks Step A and Step B of the
+resolver cascade and forces every mention into Step E (semantic), which is
+not designed to carry deterministic precision.
 
 ### 8.2 Loose normalized number
 
@@ -812,7 +925,12 @@ Use this exact order.
 Query `legi_reference_catalog` with:
 - `normalized_number`
 - `source_date`
-- optional `detected_parent_text_ids`
+- one of three scope clauses, in order of preference:
+  1. `detected_parent_text_ids` (when alias detection produced parent ids);
+  2. `code_family = <detected_family>` (when a family was detected but no
+     parent ids — rare, e.g. `OTHER_CODE` with the parent list unresolved);
+  3. `code_family = ANY(ARRAY['CGI','LPF','CIBS'])` as a last-resort scope so
+     deterministic matching is never run against the full corpus.
 
 ```sql
 SELECT
@@ -827,17 +945,22 @@ WHERE normalized_number = %(normalized_number)s
   AND start_date <= %(source_date)s
   AND end_date >= %(source_date)s
   AND (
-      COALESCE(%(detected_parent_text_ids)s, ARRAY[]::text[]) = ARRAY[]::text[]
-      OR parent_text_id = ANY(%(detected_parent_text_ids)s)
+      -- one of the three scope clauses above; never an unbounded match
+      parent_text_id = ANY(%(detected_parent_text_ids)s)
+      -- or: code_family = %(detected_family)s
+      -- or: code_family = ANY(ARRAY['CGI','LPF','CIBS'])
   );
 ```
 
 Accept immediately when:
-- exactly one row remains
+- exactly one row remains.
+
+If multiple rows survive, fall through to the §10.6 ambiguity resolver
+before declaring the step a failure.
 
 ### 10.2 Step B: exact deterministic resolution on loose key
 
-Only run if step A fails.
+Only run if step A fails. Same scope clauses as §10.1.
 
 ```sql
 SELECT
@@ -852,13 +975,14 @@ WHERE normalized_number_loose = %(normalized_number_loose)s
   AND start_date <= %(source_date)s
   AND end_date >= %(source_date)s
   AND (
-      COALESCE(%(detected_parent_text_ids)s, ARRAY[]::text[]) = ARRAY[]::text[]
-      OR parent_text_id = ANY(%(detected_parent_text_ids)s)
+      parent_text_id = ANY(%(detected_parent_text_ids)s)
+      -- or: code_family = %(detected_family)s
+      -- or: code_family = ANY(ARRAY['CGI','LPF','CIBS'])
   );
 ```
 
 Accept only when:
-- exactly one row remains
+- exactly one row remains (otherwise fall through to §10.6).
 
 ### 10.3 Step C: family-prior deterministic resolution without explicit code
 
@@ -993,14 +1117,19 @@ Why:
 
 ### 10.6 Step F: ambiguity resolver
 
-If multiple candidates still survive:
+Step F is reachable from Step A, Step B, and Step C whenever the SQL returns
+more than one row. It must apply the following ranked preferences:
 
-1. prefer exact family match over inferred family
-2. prefer exact normalized-number hit over loose or fuzzy
-3. prefer candidate with highest semantic score if semantic fallback ran
-4. if tie remains, reject rather than guess
+1. if `detected_family` is set, prefer rows whose `code_family` equals it;
+   if exactly one row remains, accept;
+2. if no family was detected, prefer the best family tier present, in order:
+   `CGI` > `LPF` > `CIBS` > `OTHER_CODE` > `NULL`. Accept only if exactly
+   one row sits at the chosen tier;
+3. prefer exact normalized-number hit over loose or fuzzy;
+4. prefer candidate with highest semantic score if semantic fallback ran;
+5. if a tie remains at the chosen tier, reject rather than guess.
 
-Precision first.
+Precision first. Implementation: `crossreference.resolver._resolve_ambiguity`.
 
 ---
 
@@ -1329,6 +1458,18 @@ Optional extended resolver:
 6. Keep mention-level provenance, not just final edges.
 7. Rebuild per source document when its hash changes.
 8. Treat JADE `ANA` preference as a known recall limitation, not as ground truth structure.
+9. `code_family` is a closed enum: `{CGI, LPF, CIBS, OTHER_CODE, NULL}`.
+   No free-text values, ever. The resolver and alias detector emit values
+   strictly inside this set; the catalog must do the same.
+10. `code_label` is the **leading legal-text label only** (e.g.
+    `Code de commerce`, `Code général des impôts`). Storing the full
+    subtitle chain pollutes the extended alias map and breaks OTHER_CODE
+    detection.
+11. The catalog refresh MUST filter `category LIKE 'LEGITEXT%'` so that
+    `JORFTEXT…` parents are never resolution targets.
+12. Mention `normalized_number` is computed from the extractor's clean
+    `article_token`, never from the rich `matched_text`. The catalog and
+    mention keys must converge on the bare article number.
 
 ---
 

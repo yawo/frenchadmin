@@ -30,6 +30,60 @@ _SOURCE_STATE_COLUMNS_ENSURED = False
 _CATALOG_STREAM_FETCH_SIZE = 2000
 _CATALOG_INSERT_BATCH_SIZE = 1000
 
+# code_family is a closed enum per CROSSREFERENCE.md §5.3. Values produced by
+# alias_detector must be a subset of this set. OTHER_CODE is assigned when a
+# clean code_label exists but the parent text is not one of the core tax codes.
+_CATALOG_FAMILY_ENUM = {"CGI", "LPF", "CIBS", "OTHER_CODE"}
+
+# Boundary markers used to cut full_title down to its leading legal-text label
+# (e.g. "Code de commerce Partie législative - LIVRE Ier : ..."
+#        -> "Code de commerce").
+_LEADING_LABEL_BOUNDARIES = (
+    " - ",
+    ", annexe",
+    " Partie ",
+    " LIVRE ",
+    " TITRE ",
+    " CHAPITRE ",
+    " Section ",
+    " Sous-section ",
+    " Livre ",
+    " Titre ",
+    " Chapitre ",
+)
+
+
+def _extract_leading_code_label(full_title, title, category):
+    """Return the leading legal-text label for a LEGI article, or None.
+
+    Per CROSSREFERENCE.md §5.2 the catalog's ``code_label`` must be the stable
+    leading label ("Code de commerce", "Code général des impôts"), not the
+    entire subtitle chain carried in ``full_title``. Non-Code/non-Livre texts
+    (Loi …, Décret …) return None so we do not store noisy aliases.
+    """
+    if category and not str(category).startswith("LEGITEXT"):
+        return None
+
+    def _leading(candidate):
+        if not candidate:
+            return None
+        t = candidate.strip().strip(".")
+        low = t.lower()
+        if not (low.startswith("code ") or low.startswith("livre ")):
+            return None
+        cut = len(t)
+        for marker in _LEADING_LABEL_BOUNDARIES:
+            idx = t.find(marker)
+            if idx != -1:
+                cut = min(cut, idx)
+        label = t[:cut].strip().strip(",").strip()
+        return label or None
+
+    label = _leading(title)
+    if label:
+        return label
+    return _leading(full_title)
+
 
 def _ensure_source_state_columns(cursor):
     """Ensure source-state optional columns exist exactly once per process."""
@@ -239,6 +293,9 @@ def refresh_legi_reference_catalog() -> str:
         # cursor becomes invalid. Regular cursor avoids this constraint.
         read_cursor = conn.cursor()
         read_cursor.itersize = _CATALOG_STREAM_FETCH_SIZE
+        # Per CROSSREFERENCE.md §1.6 / §13.4, only LEGITEXT-parented articles
+        # are valid cross-reference targets. Filter JORFTEXT... and friends out
+        # at catalog build time rather than relying on the resolver.
         read_cursor.execute(
             """
             SELECT DISTINCT ON (doc_id)
@@ -250,6 +307,7 @@ def refresh_legi_reference_catalog() -> str:
                 start_date::date,
                 end_date::date
             FROM legi
+            WHERE category LIKE 'LEGITEXT%'
             ORDER BY
                 doc_id,
                 (number IS NULL),
@@ -279,31 +337,21 @@ def refresh_legi_reference_catalog() -> str:
             norm_num = normalize_article_number(number)
             norm_num_loose = loose_normalized_number(norm_num)
 
-            # Infer code_label
-            code_label = None
-            if title:
-                t = title.lower().strip()
-                if t.startswith("code ") or t.startswith("livre "):
-                    code_label = title
-            if not code_label and full_title:
-                t = full_title.lower().strip()
-                if t.startswith("code ") or t.startswith("livre "):
-                    code_label = full_title
+            # §5.2 — code_label must be the stable leading legal-text label.
+            code_label = _extract_leading_code_label(full_title, title, category)
 
-            # Infer code_family
+            # §5.3 — code_family is a closed enum.
             family = None
             if category:
                 for fam_name, fam_info in CODE_FAMILY_MAP.items():
                     if category in fam_info.get("parent_text_ids", []):
                         family = fam_name
                         break
-            
-            # Fallback: extract code family from code_label
-            if not family and code_label:
-                # Extract first part before " - " or " Partie" (e.g., "Code civil", "Code de commerce")
-                code_name = code_label.split(" - ")[0].split(" Partie")[0].strip()
-                if code_name:
-                    family = code_name
+            if family is None and code_label:
+                family = "OTHER_CODE"
+            if family is not None and family not in _CATALOG_FAMILY_ENUM:
+                # Defensive: never store values outside the enum.
+                family = None
 
             aliases = _build_aliases_for_row(number, code_label, category)
 
