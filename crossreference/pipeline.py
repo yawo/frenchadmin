@@ -25,6 +25,7 @@ from database.cross_reference_manage import (
     refresh_legi_reference_catalog,
     upsert_source_state_hash,
 )
+from crossreference._version import PIPELINE_VERSION
 from database.graph_manage import init_graph_schema, inject_cross_reference_edges
 from crossreference.alias_detector import invalidate_extended_alias_cache
 from crossreference.extractor import extract_article_mentions
@@ -95,13 +96,18 @@ def infer_crossreferences(
             doc_started = time.perf_counter()
 
             try:
-                # Check incremental: skip if hash unchanged
+                # Check incremental: skip when source content, catalog content,
+                # AND inference pipeline version are all unchanged. Bumping
+                # PIPELINE_VERSION on any extractor/resolver/normalizer change
+                # invalidates every stored state row at deploy time, forcing a
+                # full reprocess even when LEGI and JADE/BOFIP have not moved.
                 current_hash = doc_info["source_hash"]
                 stored_state = _get_stored_state(src, doc_info["doc_id"])
                 hashes_match = (
                     stored_state
                     and stored_state["source_hash"] == current_hash
                     and stored_state["catalog_hash"] == catalog_hash
+                    and stored_state.get("pipeline_version") == PIPELINE_VERSION
                 )
                 if hashes_match and stored_state.get("graph_sync_ok"):
                     logger.debug(f"Skipping {src} doc {doc_info['doc_id']}: hash unchanged")
@@ -221,6 +227,7 @@ def _upsert_source_state(
             source_hash,
             catalog_hash=catalog_hash,
             graph_sync_ok=graph_sync_ok,
+            pipeline_version=PIPELINE_VERSION,
         )
         conn.commit()
 

@@ -102,6 +102,12 @@ def _ensure_source_state_columns(cursor):
         ADD COLUMN IF NOT EXISTS graph_sync_ok BOOLEAN NOT NULL DEFAULT false
         """
     )
+    cursor.execute(
+        """
+        ALTER TABLE cross_reference_source_state
+        ADD COLUMN IF NOT EXISTS pipeline_version TEXT NOT NULL DEFAULT ''
+        """
+    )
     _SOURCE_STATE_COLUMNS_ENSURED = True
 
 
@@ -229,6 +235,7 @@ def create_cross_reference_tables():
                 source_doc_id TEXT NOT NULL,
                 source_hash TEXT NOT NULL,
                 catalog_hash TEXT NOT NULL DEFAULT '',
+                pipeline_version TEXT NOT NULL DEFAULT '',
                 graph_sync_ok BOOLEAN NOT NULL DEFAULT false,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 PRIMARY KEY (source_type, source_doc_id)
@@ -244,6 +251,12 @@ def create_cross_reference_tables():
             """
             ALTER TABLE cross_reference_source_state
             ADD COLUMN IF NOT EXISTS graph_sync_ok BOOLEAN NOT NULL DEFAULT false
+            """
+        )
+        cursor.execute(
+            """
+            ALTER TABLE cross_reference_source_state
+            ADD COLUMN IF NOT EXISTS pipeline_version TEXT NOT NULL DEFAULT ''
             """
         )
         cursor.execute("""
@@ -495,7 +508,7 @@ def get_source_state(cursor, source_type, source_doc_id):
     _ensure_source_state_columns(cursor)
     cursor.execute(
         """
-        SELECT source_hash, catalog_hash, graph_sync_ok
+        SELECT source_hash, catalog_hash, graph_sync_ok, pipeline_version
         FROM cross_reference_source_state
         WHERE source_type = %s AND source_doc_id = %s
         """,
@@ -508,6 +521,7 @@ def get_source_state(cursor, source_type, source_doc_id):
         "source_hash": row[0],
         "catalog_hash": row[1] or "",
         "graph_sync_ok": bool(row[2]),
+        "pipeline_version": row[3] or "",
     }
 
 
@@ -526,21 +540,31 @@ def upsert_source_state_hash(
     source_hash,
     catalog_hash="",
     graph_sync_ok=False,
+    pipeline_version="",
 ):
     """Upsert source hash after a successful per-document rebuild."""
     _ensure_source_state_columns(cursor)
     cursor.execute(
         """
         INSERT INTO cross_reference_source_state (
-            source_type, source_doc_id, source_hash, catalog_hash, graph_sync_ok, updated_at
-        ) VALUES (%s, %s, %s, %s, %s, NOW())
+            source_type, source_doc_id, source_hash, catalog_hash,
+            pipeline_version, graph_sync_ok, updated_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, NOW())
         ON CONFLICT (source_type, source_doc_id) DO UPDATE SET
             source_hash = EXCLUDED.source_hash,
             catalog_hash = EXCLUDED.catalog_hash,
+            pipeline_version = EXCLUDED.pipeline_version,
             graph_sync_ok = EXCLUDED.graph_sync_ok,
             updated_at = NOW()
         """,
-        (source_type, source_doc_id, source_hash, catalog_hash, graph_sync_ok),
+        (
+            source_type,
+            source_doc_id,
+            source_hash,
+            catalog_hash,
+            pipeline_version,
+            graph_sync_ok,
+        ),
     )
 
 
