@@ -757,30 +757,47 @@ def _get_admin_connection():
     )
 
 
-def clean_cross_reference_data(source: str = "all"):
+def clean_cross_reference_data(source: str = "all", reset_catalog: bool = False):
     """Clean cross-reference tables for one or all sources to force reprocessing.
-    
+
     Removes:
     - cross_reference_legi_mentions for source
     - cross_reference_legi_edges for source
     - cross_reference_source_state for source
-    
+
+    When ``reset_catalog`` is true and ``source == 'all'``, also truncates
+    ``legi_reference_catalog`` so the next ``infer_crossreferences`` run
+    rebuilds it from scratch. The catalog is content-addressed by
+    ``catalog_hash``, so a rebuild from identical LEGI data produces the
+    same hash; this option is useful only when the catalog content itself
+    is suspected to be corrupt.
+
     Args:
         source: 'jade', 'bofip', or 'all'
+        reset_catalog: also TRUNCATE legi_reference_catalog (only valid
+            when source == 'all').
     """
     if source not in ("jade", "bofip", "all"):
         raise ValueError(f"Invalid source: {source}. Use jade, bofip, or all.")
-    
+    if reset_catalog and source != "all":
+        raise ValueError(
+            "reset_catalog=True is only valid when source='all'; pass --all "
+            "or omit reset_catalog."
+        )
+
     conn = None
     try:
         conn = _get_admin_connection()
         cursor = conn.cursor()
-        
+
         if source == "all":
             logger.info("Cleaning ALL cross-reference data (jade and bofip)")
             cursor.execute("DELETE FROM cross_reference_legi_mentions")
             cursor.execute("DELETE FROM cross_reference_legi_edges")
             cursor.execute("DELETE FROM cross_reference_source_state")
+            if reset_catalog:
+                logger.info("Truncating legi_reference_catalog")
+                cursor.execute("TRUNCATE TABLE legi_reference_catalog")
         else:
             logger.info(f"Cleaning cross-reference data for source={source}")
             cursor.execute(
@@ -795,22 +812,24 @@ def clean_cross_reference_data(source: str = "all"):
                 "DELETE FROM cross_reference_source_state WHERE source_type = %s",
                 (source,)
             )
-        
+
         conn.commit()
-        
-        # Log results
+
         cursor.execute("SELECT COUNT(*) FROM cross_reference_legi_mentions")
         mentions_count = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM cross_reference_legi_edges")
         edges_count = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM cross_reference_source_state")
         state_count = cursor.fetchone()[0]
-        
+        cursor.execute("SELECT COUNT(*) FROM legi_reference_catalog")
+        catalog_count = cursor.fetchone()[0]
+
         logger.info(
             f"Clean complete: {mentions_count} mentions remaining, "
-            f"{edges_count} edges remaining, {state_count} state entries remaining"
+            f"{edges_count} edges remaining, {state_count} state entries remaining, "
+            f"{catalog_count} catalog rows remaining"
         )
-        
+
     except Exception as e:
         logger.error(f"Error cleaning cross-reference data: {e}")
         if conn:

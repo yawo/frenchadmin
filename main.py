@@ -11,7 +11,7 @@ Usage:
     main.py export_table (--table=<name>) [--output=<path>] [--split] [--debug]
     main.py upload_dataset (--all | --dataset-name=<name>) [--input=<path>] [--repository=<name>] [--private] [--debug]
     main.py infer_crossreferences (--source=<source>) [--model=<model_name>] [--debug]
-    main.py clean_crossreferences (--source=<source>) [--debug]
+    main.py clean_crossreferences (--source=<source>) [--reset-catalog] [--yes] [--debug]
     main.py -h | --help
 
 Commands:
@@ -38,6 +38,8 @@ Options:
     --output=<path>         Output folder for Parquet files
     --split                 Split the table into smaller tables before exporting
     --private               Upload dataset as private on Hugging Face
+    --reset-catalog         Also TRUNCATE legi_reference_catalog (only valid with --source=all)
+    --yes                   Skip the interactive confirmation prompt for destructive operations
     --debug                 Enable debug logging
     -h --help               Show this help message
 
@@ -276,12 +278,44 @@ def main():
             from database.cross_reference_manage import clean_cross_reference_data
 
             source = args["--source"]
+            reset_catalog = bool(args.get("--reset-catalog"))
+            assume_yes = bool(args.get("--yes"))
             if source not in ("jade", "bofip", "all"):
                 logger.error(f"Invalid source for clean_crossreferences: {source}. Use jade, bofip, or all.")
                 return 1
+            if reset_catalog and source != "all":
+                logger.error(
+                    "--reset-catalog is only valid with --source=all"
+                )
+                return 1
 
-            logger.info(f"Cleaning cross-reference data for source={source}")
-            clean_cross_reference_data(source=source)
+            scope_label = "ALL JADE+BOFIP" if source == "all" else source.upper()
+            extras = " AND legi_reference_catalog" if reset_catalog else ""
+            warning = (
+                f"clean_crossreferences will DELETE mentions, edges, and source-state for "
+                f"{scope_label}{extras}. This is irreversible."
+            )
+            logger.warning(warning)
+            if not assume_yes:
+                if not sys.stdin.isatty():
+                    logger.error(
+                        "Refusing to proceed without --yes when stdin is not a TTY. "
+                        "Re-run with --yes to confirm."
+                    )
+                    return 1
+                try:
+                    response = input("Type 'yes' to confirm: ").strip().lower()
+                except EOFError:
+                    response = ""
+                if response != "yes":
+                    logger.info("Aborted by user.")
+                    return 1
+
+            logger.info(
+                f"Cleaning cross-reference data for source={source} "
+                f"(reset_catalog={reset_catalog})"
+            )
+            clean_cross_reference_data(source=source, reset_catalog=reset_catalog)
             logger.info(f"Successfully cleaned cross-reference data for {source}")
 
         return 0
