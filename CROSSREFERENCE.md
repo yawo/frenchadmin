@@ -1118,18 +1118,23 @@ Why:
 ### 10.6 Step F: ambiguity resolver
 
 Step F is reachable from Step A, Step B, and Step C whenever the SQL returns
-more than one row. It must apply the following ranked preferences:
+more than one row. The implemented rules are:
 
-1. if `detected_family` is set, prefer rows whose `code_family` equals it;
-   if exactly one row remains, accept;
-2. if no family was detected, prefer the best family tier present, in order:
-   `CGI` > `LPF` > `CIBS` > `OTHER_CODE` > `NULL`. Accept only if exactly
-   one row sits at the chosen tier;
-3. prefer exact normalized-number hit over loose or fuzzy;
-4. prefer candidate with highest semantic score if semantic fallback ran;
-5. if a tie remains at the chosen tier, reject rather than guess.
+1. if `detected_family` is set, narrow the candidate list to rows whose
+   `code_family` equals it; if exactly one remains, accept;
+2. if `detected_family` is not set, pick the best family tier present, in
+   order `CGI` > `LPF` > `CIBS` > `OTHER_CODE` > `NULL`. Accept only if
+   exactly one row sits at the chosen tier;
+3. otherwise reject.
 
-Precision first. Implementation: `crossreference.resolver._resolve_ambiguity`.
+The "exact over loose" and "highest semantic score" preferences listed in
+earlier drafts are enforced **upstream**, not inside the tie-break: Step A
+runs before Step B (so an exact hit wins over a loose hit by construction);
+the semantic resolver applies its own threshold and `LIMIT 1` on best
+cosine similarity before returning. The tie-break only sees the rows the
+upstream layers were unable to disambiguate by family scope.
+
+Implementation: :func:`crossreference.resolver._resolve_ambiguity`.
 
 ---
 
@@ -1137,7 +1142,8 @@ Precision first. Implementation: `crossreference.resolver._resolve_ambiguity`.
 
 Confidence is not just a numeric similarity score. It must encode why the link is trustworthy.
 
-Suggested scoring:
+Reference implementation: :func:`crossreference.confidence.score_confidence`.
+Calibrated values currently in use:
 
 ```python
 confidence = 0.0
@@ -1148,43 +1154,60 @@ elif resolver_method == "exact_number_and_temporal_unique":
     confidence = 0.96
 elif resolver_method == "exact_loose_and_explicit_code":
     confidence = 0.92
+elif resolver_method == "exact_loose":
+    confidence = 0.85
 elif resolver_method == "exact_number_core_family_only":
     confidence = 0.84
 elif resolver_method == "fuzzy_scoped":
-    confidence = 0.74
+    confidence = 0.78
 elif resolver_method == "semantic_scoped":
-    confidence = 0.62
+    confidence = 0.65
 ```
 
 Adjustments:
 
 ```python
 if source_type == "jade" and mention_in_vu_like_section:
-    confidence += 0.03
+    confidence += 0.05
 
 if repeated_in_multiple_chunks:
-    confidence += 0.03
+    confidence += 0.05
+
+# Tiered semantic boost on top of the semantic_scoped base when the
+# resolver_method is "semantic_scoped":
+if resolver_method == "semantic_scoped" and semantic_similarity is not None:
+    if semantic_similarity >= 0.92: confidence += 0.35
+    elif semantic_similarity >= 0.88: confidence += 0.30
+    elif semantic_similarity >= 0.84: confidence += 0.25
+    elif semantic_similarity >= 0.80: confidence += 0.20
+    elif semantic_similarity >= 0.75: confidence += 0.15
 
 if no_explicit_code_alias:
-    confidence -= 0.10
+    confidence -= 0.05
 
 if generic_numeric_ref:
-    confidence -= 0.15
-
-if ambiguous_before_tie_break:
-    confidence -= 0.12
+    confidence -= 0.10
 
 confidence = max(0.0, min(1.0, confidence))
 ```
 
-Acceptance rule:
+Acceptance rule (in :func:`crossreference.pipeline._process_source_document`):
 
 ```python
-is_accepted = confidence >= 0.70
+is_accepted = confidence >= 0.55
 ```
 
-Stronger rule:
-- if `resolver_method` is semantic-only and there is no code alias, require `confidence >= 0.80` or reject
+The threshold is deliberately lower than 0.70 to admit fuzzy-scoped (base
+0.78) and semantic-scoped (base 0.65 + tiered boost) hits when they survive
+the resolver's precision-first guards. The base scores and adjustment
+weights compensate, and the no-alias / generic-number penalties stack to
+push genuinely low-signal mentions below the threshold.
+
+Stronger semantic rule (enforced inside the semantic resolver itself, not
+in the confidence layer):
+
+- if a code alias was detected, require cosine similarity ≥ 0.75
+- otherwise require cosine similarity ≥ 0.85
 
 ---
 
@@ -1192,7 +1215,14 @@ Stronger rule:
 
 ### 12.1 Mention identity
 
-Deduplicate mentions with a stable hash such as:
+`mention_hash` identifies a **source mention span**, not the resolution
+outcome. It MUST NOT include `target_legi_doc_id`: re-running the resolver
+(after a normalizer or alias-detector change) must update the existing
+mention row in place rather than creating a new one. Including the target
+in the hash would defeat that and accumulate duplicate mentions.
+
+Reference implementation:
+:func:`crossreference.pipeline._compute_mention_hash`.
 
 ```python
 mention_hash = sha1(
@@ -1203,10 +1233,14 @@ mention_hash = sha1(
         str(match_start),
         str(match_end),
         matched_text,
-        target_legi_doc_id or "",
     ]).encode("utf-8")
 ).hexdigest()
 ```
+
+Note: with this hash and the JADE chunk-text fix (§6.1), the same mention
+can only appear once per `(source_doc_id, source_chunk_id, span)`. The
+per-doc rebuild path always deletes mentions before reinsertion, so
+collisions are exercised only by the graph-retry branch (§14).
 
 ### 12.2 Aggregate accepted mentions into edges
 
@@ -1470,6 +1504,13 @@ Optional extended resolver:
 12. Mention `normalized_number` is computed from the extractor's clean
     `article_token`, never from the rich `matched_text`. The catalog and
     mention keys must converge on the bare article number.
+13. Skip-on-incremental requires **all three** of `source_hash`,
+    `catalog_hash`, and `pipeline_version` to match. Bumping
+    `crossreference._version.PIPELINE_VERSION` forces every source doc to
+    be reprocessed on the next run, even when source content and catalog
+    content are unchanged. This is mandatory whenever inference logic
+    changes (extractor, normalizer, resolver cascade, alias detector,
+    confidence scorer, pipeline orchestrator).
 
 ---
 
