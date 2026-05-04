@@ -69,6 +69,24 @@ def test_enumeration_yields_one_mention_per_token():
     assert normalized == ["38", "39", "39 A"]
 
 
+def test_enumeration_attaches_code_tail_only_to_owning_token():
+    """A1+A2 regression: in 'articles 38, 39 et 39 A du CGI' the trailing
+    'du CGI' belongs to '39 A' alone. Earlier extractor builds polluted the
+    matched_text of every preceding item with the rest of the enumeration."""
+    mentions = _mentions("les articles 38, 39 et 39 A du code général des impôts")
+    matched_texts = [m for (m, *_rest) in mentions]
+    assert matched_texts[0] == "38"
+    assert matched_texts[1] == "39"
+    assert matched_texts[2] == "39 A du code général des impôts"
+    # Both pipeline.normalize_article_number(article_token) and
+    # resolver-side normalize_article_number(matched_text) must collapse to
+    # the same key for every item.
+    for matched, token in [(m, t) for (m, t, *_rest) in mentions]:
+        assert normalize_article_number(matched) == normalize_article_number(token), (
+            f"key divergence on enumeration item {token!r} / {matched!r}"
+        )
+
+
 def test_code_du_travail_non_core():
     mentions = _mentions("Aux termes de l article L. 1242-1 du code du travail")
     assert len(mentions) == 1

@@ -27,38 +27,52 @@ _FAMILY_PREFERENCE = {"CGI": 0, "LPF": 1, "CIBS": 2, "OTHER_CODE": 3}
 
 
 def resolve_article(
-    raw_article_text: str,
+    article_token: str,
     source_date: date,
     context_text: str = "",
     source_type: str = "",
     model: str = EMBEDDING_MODEL,
+    matched_text: str | None = None,
 ) -> dict:
     """Resolve one article mention to a versioned legi.doc_id.
+
+    Args:
+        article_token: clean article span (number + letter prefix + suffix).
+            This is the canonical key for catalog lookup; it must match what
+            the pipeline stores in mention.normalized_number.
+        source_date: temporal filter for the catalog.
+        context_text: ~200-char context window for alias detection / semantic
+            fallback.
+        source_type: 'jade' or 'bofip'.
+        model: embedding model used for semantic fallback.
+        matched_text: rich span (article_token + optional trailing code-name
+            clause). Used only for `extract_code_family_from_mention` so the
+            normalisation key stays bound to article_token.
 
     Returns dict with:
         target_legi_doc_id, target_parent_text_id, target_article_number,
         target_start_date, target_end_date,
         resolver_method, confidence, explain
     """
-    normalized = normalize_article_number(raw_article_text)
+    if matched_text is None:
+        matched_text = article_token
+
+    normalized = normalize_article_number(article_token)
     loose = loose_normalized_number(normalized)
 
-    # Detect code family from context
     detected_family, detected_alias, detected_parents = infer_code_family(context_text)
-    
-    # If not detected from context, try extracting from mention itself
-    mention_family = None
+
     if not detected_family:
-        mention_family = extract_code_family_from_mention(raw_article_text)
+        mention_family = extract_code_family_from_mention(matched_text)
         if mention_family:
-            # Use extracted family to get parent_text_ids
             from crossreference.alias_detector import CODE_FAMILY_MAP
             fam_info = CODE_FAMILY_MAP.get(mention_family, {})
             detected_parents = fam_info.get("parent_text_ids", [])
             detected_family = mention_family
 
     explain = {
-        "raw_text": raw_article_text,
+        "raw_text": matched_text,
+        "article_token": article_token,
         "normalized": normalized,
         "loose": loose,
         "detected_code_alias": detected_alias,

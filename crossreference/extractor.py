@@ -46,11 +46,15 @@ _CODE_BOUNDARY_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
-# Extended preposition: du | des | de la | de l' | de l | au | aux | de.
-# Placed first in the extractor so "de l'annexe II" is fully consumed as the
-# preposition rather than leaving a stray "l" attached to the article portion.
-_PREPOSITION_LOOKAHEAD_RE = re.compile(
-    r"^(.+?)\s+(?:du|des|de\s+la|de\s+l['’]|de\s+l\s+|au|aux|de)\s+",
+# Extended preposition matched immediately after the article token. We do NOT
+# allow `.+?` between the token and the preposition: that earlier shape made
+# the first article in an enumeration like "articles 38, 39 et 39 A du CGI"
+# greedily swallow the rest of the enumeration as `article_part`. Anchoring
+# the preposition right at the token boundary means the code-name tail is
+# attached only to the article that genuinely owns it (the last item in the
+# enumeration here).
+_IMMEDIATE_PREPOSITION_RE = re.compile(
+    r"^\s+(?:du|des|de\s+la|de\s+l['’]|de\s+l\s+|au|aux|de)\s+",
     re.IGNORECASE,
 )
 
@@ -112,16 +116,19 @@ def extract_article_mentions(text: str):
                 token_clean = token_clean[: tail_match.start()].rstrip()
             article_token = token_clean
 
-            # Extend matched_text with "du/de/de la/de l'/au/aux <code-name>" if present.
+            # Extend matched_text with "du/de/de la/de l'/au/aux <code-name>" if
+            # the preposition appears IMMEDIATELY after the article token. This
+            # keeps the code clause on the article that actually owns it: in
+            # "articles 38, 39 et 39 A du CGI" only "39 A" gets the tail.
             # article_token is preserved unchanged; only matched_text grows.
+            article_part = matched_raw
             lookahead_end = min(len(text), raw_end + 200)
-            lookahead = text[raw_start:lookahead_end]
+            tail_text = text[raw_end:lookahead_end]
 
-            prepos_match = _PREPOSITION_LOOKAHEAD_RE.match(lookahead)
+            prepos_match = _IMMEDIATE_PREPOSITION_RE.match(tail_text)
             if prepos_match:
-                article_part = prepos_match.group(1).strip()
                 code_start = prepos_match.end()
-                code_text = lookahead[code_start:]
+                code_text = tail_text[code_start:]
 
                 code_boundary_match = _CODE_BOUNDARY_RE.search(remove_accents(code_text))
                 if code_boundary_match:
