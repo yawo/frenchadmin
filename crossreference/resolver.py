@@ -62,13 +62,15 @@ def resolve_article(
 
     detected_family, detected_alias, detected_parents = infer_code_family(context_text)
 
+    # If context-based detection did not fire, fall back to the matched_text
+    # itself. extract_code_family_from_mention now returns parent_text_ids
+    # for OTHER_CODE families too, so fuzzy / semantic fallbacks scope to the
+    # correct legal corpus instead of reverting to tax core.
     if not detected_family:
-        mention_family = extract_code_family_from_mention(matched_text)
+        mention_family, mention_parents = extract_code_family_from_mention(matched_text)
         if mention_family:
-            from crossreference.alias_detector import CODE_FAMILY_MAP
-            fam_info = CODE_FAMILY_MAP.get(mention_family, {})
-            detected_parents = fam_info.get("parent_text_ids", [])
             detected_family = mention_family
+            detected_parents = mention_parents
 
     explain = {
         "raw_text": matched_text,
