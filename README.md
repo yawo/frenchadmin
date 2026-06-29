@@ -7,7 +7,7 @@
 
 ## 📝 Description
 
-FrenchAdmin processes French public administration data for AI applications in the public sector, with a focus on **tax law** (BOFiP/ CGI). It downloads, processes, embeds, and stores data in PostgreSQL with PgVector for vector search, and FalkorDB for knowledge graph relationships.
+FrenchAdmin processes French tax data and GraphRAG for AI applications. The data focuses on **tax law** (CGI et annexes, Assemblée Nationale), **doctrine** (BOFiP, Bercy) and jurisprudence (JADE, Conseil d'état). It downloads, processes, embeds, and stores data in PostgreSQL with PgVector for vector search, and FalkorDB for knowledge graph relationships.
 
 Key capabilities:
 - **LEGI**: French legislative texts (Code Général des Impôts, LPF, etc.)
