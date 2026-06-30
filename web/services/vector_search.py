@@ -133,9 +133,23 @@ def _fts_search(
     source_types: list[SourceType],
     top_k: int,
 ) -> list[ChunkResult]:
-    """Full-text search using PostgreSQL tsvector/tsquery."""
-    per_table_k = max(3, top_k // len(source_types) + 1)
+    """Full-text search using OR-based tsquery (matches docs containing any query term).
+
+    Splits the query into individual words and builds an OR-combined tsquery so that
+    documents matching more terms rank higher, without requiring ALL terms to be present.
+    """
+    words = [w for w in query_text.split() if w]
+    if not words:
+        return []
+
+    per_table_k = max(5, top_k // len(source_types) + 2)
     results: list[ChunkResult] = []
+
+    # Build OR tsquery: plainto_tsquery('french', w1) || plainto_tsquery('french', w2) || ...
+    tsquery_parts = [f"plainto_tsquery('french', %s)"]
+    for _ in words[1:]:
+        tsquery_parts.append(f"plainto_tsquery('french', %s)")
+    tsquery_expr = " || ".join(tsquery_parts)
 
     cursor = conn.cursor()
     for st in source_types:
@@ -143,23 +157,32 @@ def _fts_search(
         meta_cols = METADATA_COLUMNS[table]
         meta_select = ", ".join(f"t.{c}" for c in meta_cols)
 
+        # LEGI: deduplicate by (category, number) to avoid temporal version flooding
+        if table == "legi":
+            dedup_cols = "t.category, t.number"
+        else:
+            dedup_cols = "t.doc_id"
+
         query = f"""
-            SELECT
-                t.doc_id,
-                t.chunk_id,
-                t.title,
-                t.chunk_text,
-                ts_rank_cd(t.chunk_tsv, query) AS fts_score,
-                {meta_select}
-            FROM {table} t,
-                 plainto_tsquery('french', %s) query
-            WHERE t.chunk_tsv @@ query
-            ORDER BY ts_rank_cd(t.chunk_tsv, query) DESC
-            LIMIT %s
+            WITH query AS (SELECT {tsquery_expr} AS q),
+            ranked AS (
+                SELECT DISTINCT ON ({dedup_cols})
+                    t.doc_id,
+                    t.chunk_id,
+                    t.title,
+                    t.chunk_text,
+                    ts_rank_cd(t.chunk_tsv, query.q, 1) AS fts_score,
+                    {meta_select}
+                FROM {table} t, query
+                WHERE t.chunk_tsv @@ query.q
+                ORDER BY {dedup_cols}, ts_rank_cd(t.chunk_tsv, query.q, 1) DESC
+            )
+            SELECT * FROM ranked ORDER BY fts_score DESC LIMIT %s
         """
+        params = words + [per_table_k]
         try:
             cursor.execute("SAVEPOINT fts_search")
-            cursor.execute(query, [query_text, per_table_k])
+            cursor.execute(query, params)
             rows = cursor.fetchall()
             col_names = [desc[0] for desc in cursor.description]
 
