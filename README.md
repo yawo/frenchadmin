@@ -502,6 +502,62 @@ web/
         └── types/index.ts    # TypeScript type definitions
 ```
 
+## 💾 Exporting & Restoring the Database
+
+### PostgreSQL (pg_dump)
+
+**Export:**
+```bash
+pg_dump -h localhost -p 5433 -U user -d mediatech -F c -f mediatech.dump
+```
+
+**Restore on another machine:**
+```bash
+# Create the database first if it doesn't exist
+createdb -h localhost -p 5433 -U user mediatech
+pg_restore -h localhost -p 5433 -U user -d mediatech mediatech.dump
+```
+
+### FalkorDB (Redis RDB snapshot)
+
+**Export:**
+```bash
+# Trigger a background save
+docker exec falkor redis-cli BGSAVE
+# Wait a moment, then copy the dump file
+docker cp falkor:/data/dump.rdb ./falkordb_dump.rdb
+```
+
+**Restore on another machine:**
+```bash
+# Place the dump before starting the container
+cp falkordb_dump.rdb /path/to/your/falkordb/data/dump.rdb
+docker compose up -d falkor
+```
+
+### Docker volume copy (all-in-one)
+
+If both machines use the same `docker-compose.yml`:
+
+**Export:**
+```bash
+docker compose stop
+tar -czf frenchadmin_data.tar.gz \
+  $(docker volume inspect frenchadmin_pg_data --format '{{.Mountpoint}}') \
+  $(docker volume inspect frenchadmin_falkor_data --format '{{.Mountpoint}}')
+docker compose start
+```
+
+**Restore:**
+```bash
+# Transfer frenchadmin_data.tar.gz to target machine, then:
+docker compose stop
+sudo tar -xzf frenchadmin_data.tar.gz -C /
+docker compose up -d
+```
+
+> **Tip:** The project also provides `scripts/backup.sh` and `scripts/restore.sh` which automate PostgreSQL volume backup and restoration.
+
 ## ⚖️ License
 
 This project is licensed under the [MIT License](./LICENSE).
