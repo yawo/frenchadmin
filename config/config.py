@@ -141,3 +141,13 @@ RERANKER_MIN_SCORE = float(os.getenv("RERANKER_MIN_SCORE", "0.01"))
 ENABLE_HYBRID_SEARCH = _get_env_bool("ENABLE_HYBRID_SEARCH", True)
 RRF_K = int(os.getenv("RRF_K", "60"))
 FTS_WEIGHT = float(os.getenv("FTS_WEIGHT", "1.0"))
+
+# Query expansion
+ENABLE_QUERY_EXPANSION = _get_env_bool("ENABLE_QUERY_EXPANSION", True)
+
+# FTS mode: "auto" (AND for ≤3 words, OR for 4+), "and", "or"
+FTS_MODE = os.getenv("FTS_MODE", "auto")
+
+# Sparse retrieval (BGE-M3 learned lexical weights)
+ENABLE_SPARSE_SEARCH = _get_env_bool("ENABLE_SPARSE_SEARCH", True)
+SPARSE_WEIGHT = float(os.getenv("SPARSE_WEIGHT", "1.0"))

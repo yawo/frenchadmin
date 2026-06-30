@@ -13,6 +13,7 @@ Usage:
     main.py infer_crossreferences (--source=<source>) [--model=<model_name>] [--debug]
     main.py clean_crossreferences (--source=<source>) [--reset-catalog] [--yes] [--debug]
     main.py add_fts_columns [--debug]
+    main.py add_sparse_embeddings [--debug]
     main.py -h | --help
 
 Commands:
@@ -26,6 +27,7 @@ Commands:
     infer_crossreferences       Infer JADE/BOFIP -> LEGI cross-references
     clean_crossreferences       Clean cross-reference tables (mentions, edges, state) for reprocessing
     add_fts_columns             Add full-text search columns (tsvector + GIN index) for hybrid search
+    add_sparse_embeddings       Generate BGE-M3 sparse embeddings for all documents (JSONB column)
 
 Options:
     --delete-existing       Delete existing tables before creating new ones
@@ -62,6 +64,7 @@ Examples:
     main.py clean_crossreferences --source jade
     main.py clean_crossreferences --source all
     main.py add_fts_columns
+    main.py add_sparse_embeddings
 """
 
 import os
@@ -286,10 +289,13 @@ def main():
                 for table in ("legi", "jade", "bofip"):
                     logger.info("Processing %s...", table.upper())
                     _ensure_fts_column(cursor, table)
-                    # Backfill existing rows in batches
+                    conn.commit()
+                    # Backfill existing rows in batches (weighted: title=A, chunk_text=B)
                     while True:
                         cursor.execute(f"""
-                            UPDATE {table.upper()} SET chunk_tsv = to_tsvector('french', coalesce(chunk_text, ''))
+                            UPDATE {table.upper()} SET chunk_tsv =
+                                setweight(to_tsvector('french', coalesce(title, '')), 'A') ||
+                                setweight(to_tsvector('french', coalesce(chunk_text, '')), 'B')
                             WHERE chunk_id IN (
                                 SELECT chunk_id FROM {table.upper()} WHERE chunk_tsv IS NULL LIMIT 5000
                             )
@@ -301,6 +307,45 @@ def main():
                         logger.info("  %s: backfilled %d rows", table.upper(), updated)
                     conn.commit()
                 logger.info("FTS columns added successfully. Hybrid search is now enabled.")
+
+        # Add sparse embeddings (BGE-M3 learned lexical weights)
+        elif args["add_sparse_embeddings"]:
+            import json
+
+            from database.database_manage import get_connection, _ensure_sparse_column
+            from web.services.sparse_embedding import encode_sparse
+
+            logger.info("Adding sparse embeddings (BGE-M3) to legi, jade, bofip tables...")
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                for table in ("legi", "jade", "bofip"):
+                    logger.info("Processing %s...", table.upper())
+                    _ensure_sparse_column(cursor, table)
+                    conn.commit()
+
+                    batch_size = 256
+                    while True:
+                        cursor.execute(f"""
+                            SELECT chunk_id, chunk_text FROM {table.upper()}
+                            WHERE sparse_embedding IS NULL LIMIT {batch_size}
+                        """)
+                        rows = cursor.fetchall()
+                        if not rows:
+                            break
+
+                        chunk_ids = [r[0] for r in rows]
+                        texts = [r[1] or "" for r in rows]
+                        sparse_vecs = encode_sparse(texts)
+
+                        for chunk_id, sparse_dict in zip(chunk_ids, sparse_vecs):
+                            cursor.execute(
+                                f"UPDATE {table.upper()} SET sparse_embedding = %s WHERE chunk_id = %s",
+                                (json.dumps(sparse_dict), chunk_id),
+                            )
+                        conn.commit()
+                        logger.info("  %s: encoded %d rows", table.upper(), len(rows))
+
+                logger.info("Sparse embeddings added successfully.")
 
         # Clean cross-reference data
         elif args["clean_crossreferences"]:

@@ -165,7 +165,10 @@ def _ensure_doc_id_index(cursor, table_name: str):
 
 
 def _ensure_fts_column(cursor, table_name: str):
-    """Add tsvector column, GIN index, and auto-update trigger for full-text search."""
+    """Add tsvector column, GIN index, and auto-update trigger for full-text search.
+
+    Uses weighted tsvector: title gets weight A, chunk_text gets weight B.
+    """
     cursor.execute(
         "SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = 'chunk_tsv'",
         (table_name.lower(),),
@@ -183,7 +186,8 @@ def _ensure_fts_column(cursor, table_name: str):
     cursor.execute("""
         CREATE OR REPLACE FUNCTION tsvector_update_chunk_tsv() RETURNS trigger AS $$
         BEGIN
-            NEW.chunk_tsv := to_tsvector('french', coalesce(NEW.chunk_text, ''));
+            NEW.chunk_tsv := setweight(to_tsvector('french', coalesce(NEW.title, '')), 'A') ||
+                             setweight(to_tsvector('french', coalesce(NEW.chunk_text, '')), 'B');
             RETURN NEW;
         END;
         $$ LANGUAGE plpgsql;
@@ -191,10 +195,29 @@ def _ensure_fts_column(cursor, table_name: str):
     cursor.execute(f"DROP TRIGGER IF EXISTS trg_{table_lower}_chunk_tsv ON {table_upper};")
     cursor.execute(f"""
         CREATE TRIGGER trg_{table_lower}_chunk_tsv
-            BEFORE INSERT OR UPDATE OF chunk_text ON {table_upper}
+            BEFORE INSERT OR UPDATE OF chunk_text, title ON {table_upper}
             FOR EACH ROW EXECUTE FUNCTION tsvector_update_chunk_tsv();
     """)
     logger.info("Added FTS column, GIN index, and trigger on %s", table_upper)
+
+
+def _ensure_sparse_column(cursor, table_name: str):
+    """Add JSONB sparse_embedding column with GIN index for sparse retrieval."""
+    cursor.execute(
+        "SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = 'sparse_embedding'",
+        (table_name.lower(),),
+    )
+    if cursor.fetchone():
+        return
+    table_upper = table_name.upper()
+    table_lower = table_name.lower()
+    cursor.execute(
+        f"ALTER TABLE {table_upper} ADD COLUMN IF NOT EXISTS sparse_embedding JSONB;"
+    )
+    cursor.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{table_lower}_sparse_embedding ON {table_upper} USING GIN(sparse_embedding);"
+    )
+    logger.info("Added sparse_embedding column and GIN index on %s", table_upper)
 
 
 def create_all_tables(model=EMBEDDING_MODEL, delete_existing: bool = False):

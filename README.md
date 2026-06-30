@@ -126,6 +126,10 @@ Command examples:
   ```bash
   mediatech add_fts_columns
   ```
+- Generate BGE-M3 sparse embeddings for 3-way retrieval fusion (requires FlagEmbedding):
+  ```bash
+  mediatech add_sparse_embeddings
+  ```
 
 
 Run `mediatech --help` in your terminal to see all available options, or check the code directly in [`main.py`](main.py).
@@ -326,6 +330,7 @@ The project includes a full GraphRAG frontend for querying the knowledge graph, 
 - PostgreSQL + FalkorDB running (via `docker compose up -d`)
 - Data already processed and loaded (`mediatech process_files --all --model BAAI/bge-m3`)
 - Full-text search columns added (`mediatech add_fts_columns`)
+- Sparse embeddings generated (`mediatech add_sparse_embeddings`)
 - Cross-references inferred (`mediatech infer_crossreferences --source all --model BAAI/bge-m3`)
 - Node.js 18+ (for frontend build)
 - Python 3.10+ with project dependencies installed
@@ -433,21 +438,27 @@ The GraphRAG web interface uses the same environment variables as the rest of th
 | `RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | Cross-encoder for relevance reranking |
 | `RERANKER_MAX_LENGTH` | `1024` | Max tokens the reranker sees per document |
 | `RERANKER_MIN_SCORE` | `0.01` | Minimum reranker score to keep a result |
-| `ENABLE_HYBRID_SEARCH` | `true` | Combine vector + full-text search via RRF |
+| `ENABLE_HYBRID_SEARCH` | `true` | Combine vector + full-text + sparse search via RRF |
 | `RRF_K` | `60` | RRF smoothing constant |
 | `FTS_WEIGHT` | `1.0` | Relative weight of FTS vs vector in RRF |
+| `FTS_MODE` | `auto` | FTS strategy: `auto` (AND for ≤3 words, OR for 4+), `and`, `or` |
+| `ENABLE_QUERY_EXPANSION` | `true` | Expand legal acronyms and synonyms before search |
+| `ENABLE_SPARSE_SEARCH` | `true` | BGE-M3 sparse retrieval (requires `add_sparse_embeddings`) |
+| `SPARSE_WEIGHT` | `1.0` | Relative weight of sparse retrieval in RRF |
 
 ### Query Flow
 
 1. User enters a natural language query in French
-2. **Hybrid retrieval** (oversampled 4×):
-   - Query is embedded using BAAI/bge-m3 (1024-dim) → cosine similarity search via pgvector HNSW
-   - Query is matched via PostgreSQL full-text search (`plainto_tsquery('french', ...)`) on tsvector GIN indexes
-   - Both result lists are fused using Reciprocal Rank Fusion (RRF)
-3. Top results are expanded via FalkorDB graph traversal (APPLIES_TO, INTERPRETS, REFERENCES edges)
-4. Cross-encoder reranking (BAAI/bge-reranker-v2-m3) assigns sigmoid-normalized relevance scores
-5. Results below `RERANKER_MIN_SCORE` are filtered out
-6. (Optional) Retrieved context is sent to LLM for synthesized answer with source citations
+2. **Query expansion**: legal acronyms (EURL→"entreprise unipersonnelle…") and synonyms (dirigeant→gérant) are appended
+3. **3-way hybrid retrieval** (oversampled 4×):
+   - Dense: query embedded via BAAI/bge-m3 (1024-dim) → cosine similarity search via pgvector HNSW
+   - FTS: adaptive AND/OR `plainto_tsquery('french', ...)` on title-weighted tsvector GIN indexes
+   - Sparse: BGE-M3 learned lexical weights → JSONB key overlap + dot product scoring
+   - All three result lists fused using Reciprocal Rank Fusion (RRF)
+4. Top results are expanded via FalkorDB graph traversal (APPLIES_TO, INTERPRETS, REFERENCES edges)
+5. Cross-encoder reranking (BAAI/bge-reranker-v2-m3) assigns sigmoid-normalized relevance scores
+6. Results below `RERANKER_MIN_SCORE` are filtered out
+7. (Optional) Retrieved context is sent to LLM for synthesized answer with source citations
 
 ### Project Structure (web/)
 
@@ -465,7 +476,10 @@ web/
 │   └── synthesize.py         # LLM synthesis (SSE)
 ├── services/
 │   ├── embedding.py          # Query embedding wrapper
-│   ├── vector_search.py      # pgvector cosine search
+│   ├── query_expansion.py    # Legal acronym/synonym expansion
+│   ├── sparse_embedding.py   # BGE-M3 sparse lexical weights
+│   ├── vector_search.py      # Hybrid search (dense + FTS + sparse + RRF)
+│   ├── reranker.py           # Cross-encoder reranking
 │   ├── graph_search.py       # FalkorDB Cypher queries
 │   ├── retrieval.py          # GraphRAG fusion orchestrator
 │   └── synthesis.py          # LLM answer generation
