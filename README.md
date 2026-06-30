@@ -1,4 +1,4 @@
-# FrenchAdmin
+# TaxFrance
 
 [![License](https://img.shields.io/github/license/etalab-ia/mediatech?label=licence&color=red)](https://github.com/etalab-ia/mediatech/blob/main/LICENSE)
 [![French version](https://img.shields.io/badge/🇫🇷-French%20version-blue)](./docs/README_fr.md)
