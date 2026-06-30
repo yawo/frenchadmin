@@ -164,6 +164,24 @@ def _ensure_doc_id_index(cursor, table_name: str):
     )
 
 
+def _ensure_fts_column(cursor, table_name: str):
+    """Add tsvector generated column and GIN index for full-text search."""
+    cursor.execute(
+        "SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = 'chunk_tsv'",
+        (table_name.lower(),),
+    )
+    if cursor.fetchone():
+        return
+    cursor.execute(
+        f"""ALTER TABLE {table_name.upper()} ADD COLUMN chunk_tsv tsvector
+            GENERATED ALWAYS AS (to_tsvector('french', coalesce(chunk_text, ''))) STORED;"""
+    )
+    cursor.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{table_name.lower()}_chunk_tsv ON {table_name.upper()} USING GIN(chunk_tsv);"
+    )
+    logger.info("Added FTS column and GIN index on %s", table_name.upper())
+
+
 def create_all_tables(model=EMBEDDING_MODEL, delete_existing: bool = False):
     """
     Creates the necessary tables in the PostgreSQL database as specified in the data configuration file.
@@ -328,6 +346,7 @@ def create_all_tables(model=EMBEDDING_MODEL, delete_existing: bool = False):
                 )
                 _ensure_hnsw_index(cursor, table_name, model_name)
                 _ensure_doc_id_index(cursor, table_name)
+                _ensure_fts_column(cursor, table_name)
 
             conn.commit()
             logger.info(

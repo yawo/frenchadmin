@@ -16,12 +16,20 @@ Si le contexte ne contient pas suffisamment d'informations pour répondre, dis-l
 Réponds en français."""
 
 
+def _normalize_base_url(url: str) -> str:
+    url = url.rstrip("/")
+    # If user pasted the full chat/completions endpoint, strip it back to the base
+    for suffix in ("/chat/completions", "/completions"):
+        if url.endswith(suffix):
+            url = url[: -len(suffix)]
+            break
+    return url
+
+
 def _get_client(llm_config: dict | None = None) -> OpenAI:
     if llm_config and llm_config.get("api_key"):
-        return OpenAI(
-            base_url=llm_config.get("base_url") or API_URL,
-            api_key=llm_config["api_key"],
-        )
+        base_url = _normalize_base_url(llm_config.get("base_url") or API_URL)
+        return OpenAI(base_url=base_url, api_key=llm_config["api_key"])
     return OpenAI(base_url=API_URL, api_key=API_KEY)
 
 

@@ -12,6 +12,7 @@ Usage:
     main.py upload_dataset (--all | --dataset-name=<name>) [--input=<path>] [--repository=<name>] [--private] [--debug]
     main.py infer_crossreferences (--source=<source>) [--model=<model_name>] [--debug]
     main.py clean_crossreferences (--source=<source>) [--reset-catalog] [--yes] [--debug]
+    main.py add_fts_columns [--debug]
     main.py -h | --help
 
 Commands:
@@ -24,6 +25,7 @@ Commands:
     upload_dataset              Upload dataset to Hugging Face
     infer_crossreferences       Infer JADE/BOFIP -> LEGI cross-references
     clean_crossreferences       Clean cross-reference tables (mentions, edges, state) for reprocessing
+    add_fts_columns             Add full-text search columns (tsvector + GIN index) for hybrid search
 
 Options:
     --delete-existing       Delete existing tables before creating new ones
@@ -59,6 +61,7 @@ Examples:
     main.py infer_crossreferences --source jade
     main.py clean_crossreferences --source jade
     main.py clean_crossreferences --source all
+    main.py add_fts_columns
 """
 
 import os
@@ -272,6 +275,23 @@ def main():
                     summary.get("failed_docs"),
                 )
                 return 1
+
+        # Add full-text search columns for hybrid search
+        elif args["add_fts_columns"]:
+            from database import get_connection
+
+            logger.info("Adding FTS columns (tsvector + GIN index) to legi, jade, bofip tables...")
+            conn = get_connection()
+            try:
+                sql_path = os.path.join(BASE_PATH, "database", "sql_scripts", "add_fts_columns.sql")
+                with open(sql_path) as f:
+                    sql = f.read()
+                cursor = conn.cursor()
+                cursor.execute(sql)
+                conn.commit()
+                logger.info("FTS columns added successfully. Hybrid search is now enabled.")
+            finally:
+                conn.close()
 
         # Clean cross-reference data
         elif args["clean_crossreferences"]:

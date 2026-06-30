@@ -132,6 +132,12 @@ PERF_REPORTS_DIR = os.getenv("PERF_REPORTS_DIR", os.path.join(BASE_PATH, "data",
 
 # Reranker configuration
 RERANKER_MODEL = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
-RERANKER_MAX_LENGTH = int(os.getenv("RERANKER_MAX_LENGTH", "512"))
+RERANKER_MAX_LENGTH = int(os.getenv("RERANKER_MAX_LENGTH", "1024"))
 RERANKER_BATCH_SIZE = int(os.getenv("RERANKER_BATCH_SIZE", "16"))
 RETRIEVAL_OVERSAMPLING_FACTOR = int(os.getenv("RETRIEVAL_OVERSAMPLING_FACTOR", "4"))
+RERANKER_MIN_SCORE = float(os.getenv("RERANKER_MIN_SCORE", "0.01"))
+
+# Hybrid search (FTS + vector) configuration
+ENABLE_HYBRID_SEARCH = _get_env_bool("ENABLE_HYBRID_SEARCH", True)
+RRF_K = int(os.getenv("RRF_K", "60"))
+FTS_WEIGHT = float(os.getenv("FTS_WEIGHT", "1.0"))

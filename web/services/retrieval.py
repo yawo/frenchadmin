@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+import math
 
-from config import RETRIEVAL_OVERSAMPLING_FACTOR
+from config import RERANKER_MIN_SCORE, RETRIEVAL_OVERSAMPLING_FACTOR
 from web.models.schemas import (
     ChunkResult,
     GraphData,
@@ -19,14 +20,19 @@ GRAPH_RELATIONS = ["APPLIES_TO", "INTERPRETS", "REFERENCES"]
 
 
 def _cross_encoder_rerank(query: str, results: list[ChunkResult], top_k: int) -> list[ChunkResult]:
-    """Apply cross-encoder reranking to candidate results."""
+    """Apply cross-encoder reranking and propagate sigmoid-normalized scores."""
     if not results:
         return results
     try:
         from web.services.reranker import rerank
         documents = [r.chunk_text for r in results]
         ranked = rerank(query, documents, top_k=top_k)
-        return [results[idx] for idx, _score in ranked]
+        reranked = []
+        for idx, score in ranked:
+            result = results[idx]
+            result.similarity = 1.0 / (1.0 + math.exp(-float(score)))
+            reranked.append(result)
+        return reranked
     except Exception as e:
         logger.warning("Reranker unavailable, falling back to vector similarity: %s", e)
         return results[:top_k]
@@ -62,7 +68,11 @@ def graphrag_search(conn, graph, request: SearchRequest) -> SearchResponse:
     # Step 3: Cross-encoder reranking
     results = _cross_encoder_rerank(request.query, results, request.top_k)
 
-    # Apply confidence filter
+    # Filter by reranker score threshold
+    if RERANKER_MIN_SCORE > 0:
+        results = [r for r in results if r.similarity >= RERANKER_MIN_SCORE]
+
+    # Apply user-specified confidence filter
     if request.min_confidence > 0:
         results = [r for r in results if r.similarity >= request.min_confidence]
 

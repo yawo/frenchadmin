@@ -122,6 +122,10 @@ Command examples:
   ```bash
    mediatech upload_dataset --input data/parquet/bofip.parquet --dataset-name bofip
   ```
+- Add full-text search columns for hybrid search (required after first `create_tables` or on existing databases):
+  ```bash
+  mediatech add_fts_columns
+  ```
 
 
 Run `mediatech --help` in your terminal to see all available options, or check the code directly in [`main.py`](main.py).
@@ -321,6 +325,7 @@ The project includes a full GraphRAG frontend for querying the knowledge graph, 
 
 - PostgreSQL + FalkorDB running (via `docker compose up -d`)
 - Data already processed and loaded (`mediatech process_files --all --model BAAI/bge-m3`)
+- Full-text search columns added (`mediatech add_fts_columns`)
 - Cross-references inferred (`mediatech infer_crossreferences --source all --model BAAI/bge-m3`)
 - Node.js 18+ (for frontend build)
 - Python 3.10+ with project dependencies installed
@@ -425,14 +430,23 @@ The GraphRAG web interface uses the same environment variables as the rest of th
 | `API_KEY` | — | OpenRouter API key |
 | `LLM_MODEL` | `openrouter/hunter-alpha` | LLM model for synthesis |
 | `WEB_PORT` | `8080` | Web server port (Docker) |
+| `RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | Cross-encoder for relevance reranking |
+| `RERANKER_MAX_LENGTH` | `1024` | Max tokens the reranker sees per document |
+| `RERANKER_MIN_SCORE` | `0.01` | Minimum reranker score to keep a result |
+| `ENABLE_HYBRID_SEARCH` | `true` | Combine vector + full-text search via RRF |
+| `RRF_K` | `60` | RRF smoothing constant |
+| `FTS_WEIGHT` | `1.0` | Relative weight of FTS vs vector in RRF |
 
 ### Query Flow
 
 1. User enters a natural language query in French
-2. Query is embedded using BAAI/bge-m3 (384-dim)
-3. Cosine similarity search runs across LEGI, JADE, BOFiP tables (pgvector HNSW)
-4. Top results are expanded via FalkorDB graph traversal (APPLIES_TO, INTERPRETS, REFERENCES edges)
-5. Results are re-ranked by composite score: `0.6 × similarity + 0.25 × edge_confidence + 0.15 × graph_degree`
+2. **Hybrid retrieval** (oversampled 4×):
+   - Query is embedded using BAAI/bge-m3 (1024-dim) → cosine similarity search via pgvector HNSW
+   - Query is matched via PostgreSQL full-text search (`plainto_tsquery('french', ...)`) on tsvector GIN indexes
+   - Both result lists are fused using Reciprocal Rank Fusion (RRF)
+3. Top results are expanded via FalkorDB graph traversal (APPLIES_TO, INTERPRETS, REFERENCES edges)
+4. Cross-encoder reranking (BAAI/bge-reranker-v2-m3) assigns sigmoid-normalized relevance scores
+5. Results below `RERANKER_MIN_SCORE` are filtered out
 6. (Optional) Retrieved context is sent to LLM for synthesized answer with source citations
 
 ### Project Structure (web/)
