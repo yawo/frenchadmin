@@ -3,9 +3,9 @@ import type { ChunkResult } from "../types";
 import ConfidenceBadge from "./ConfidenceBadge";
 
 const SOURCE_COLORS: Record<string, string> = {
-  legi: "border-l-legi bg-legi-light/30",
-  jade: "border-l-jade bg-jade-light/30",
-  bofip: "border-l-bofip bg-bofip-light/30",
+  legi: "border-l-legi bg-legi-light/30 dark:bg-legi/10",
+  jade: "border-l-jade bg-jade-light/30 dark:bg-jade/10",
+  bofip: "border-l-bofip bg-bofip-light/30 dark:bg-bofip/10",
 };
 
 const SOURCE_BADGES: Record<string, string> = {
@@ -22,7 +22,7 @@ interface Props {
 export default function ResultsPanel({ results, onSelectDoc }: Props) {
   if (results.length === 0) {
     return (
-      <div className="text-center py-12 text-gray-500">
+      <div className="text-center py-12 text-gray-500 dark:text-gray-400">
         Aucun résultat. Essayez une autre requête.
       </div>
     );
@@ -52,16 +52,16 @@ export default function ResultsPanel({ results, onSelectDoc }: Props) {
               </div>
               <Link
                 to={`/documents/${result.source_type}/${result.doc_id}`}
-                className="font-medium text-gray-900 hover:text-blue-600 line-clamp-1"
+                className="font-medium text-gray-900 dark:text-gray-100 hover:text-blue-600 dark:hover:text-blue-400 line-clamp-1"
                 onClick={() => onSelectDoc?.(result.doc_id, result.source_type)}
               >
                 {result.title || result.doc_id}
               </Link>
-              <p className="text-sm text-gray-600 mt-1 line-clamp-3">
+              <p className="text-sm text-gray-600 dark:text-gray-400 mt-1 line-clamp-3">
                 {result.chunk_text}
               </p>
             </div>
-            <div className="text-right text-xs text-gray-400 whitespace-nowrap">
+            <div className="text-right text-xs text-gray-400 dark:text-gray-500 whitespace-nowrap">
               {(result.similarity * 100).toFixed(1)}%
             </div>
           </div>

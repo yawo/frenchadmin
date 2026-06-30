@@ -56,6 +56,9 @@ services:
       API_URL: ${API_URL:-https://openrouter.ai/api/v1}
       API_KEY: ${API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-openrouter/hunter-alpha}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      JWT_EXPIRY_HOURS: ${JWT_EXPIRY_HOURS:-24}
+      FERNET_KEY: ${FERNET_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy

@@ -82,3 +82,29 @@ export interface SynthesisRequest {
   top_k?: number;
   max_context_tokens?: number;
 }
+
+export interface HistoryEntry {
+  id: string;
+  timestamp: number;
+  type: "search" | "synthesis";
+  query: string;
+  sourceTypes?: SourceType[];
+  resultCount?: number;
+  synthesisText?: string;
+}
+
+export interface User {
+  id: string;
+  username: string;
+}
+
+export interface TokenResponse {
+  token: string;
+  username: string;
+}
+
+export interface LLMSettings {
+  llm_model: string | null;
+  llm_base_url: string | null;
+  has_api_key: boolean;
+}

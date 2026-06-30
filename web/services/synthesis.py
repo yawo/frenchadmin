@@ -16,7 +16,12 @@ Si le contexte ne contient pas suffisamment d'informations pour répondre, dis-l
 Réponds en français."""
 
 
-def _get_client() -> OpenAI:
+def _get_client(llm_config: dict | None = None) -> OpenAI:
+    if llm_config and llm_config.get("api_key"):
+        return OpenAI(
+            base_url=llm_config.get("base_url") or API_URL,
+            api_key=llm_config["api_key"],
+        )
     return OpenAI(base_url=API_URL, api_key=API_KEY)
 
 
@@ -49,21 +54,24 @@ def _build_context(conn, graph, request: SynthesisRequest) -> str:
     return "\n---\n".join(context_parts)
 
 
-async def stream_synthesis(conn, graph, request: SynthesisRequest) -> AsyncGenerator[dict, None]:
-    """Stream LLM synthesis response as SSE events."""
+async def stream_synthesis_sse(
+    conn, graph, request: SynthesisRequest, llm_config: dict | None = None
+) -> AsyncGenerator[str, None]:
+    """Stream LLM synthesis response as raw SSE text lines."""
     context = _build_context(conn, graph, request)
 
     if not context.strip():
-        yield {"event": "message", "data": json.dumps({"content": "Aucun document pertinent trouvé pour cette requête."})}
-        yield {"event": "done", "data": ""}
+        yield f"data:{json.dumps({'content': 'Aucun document pertinent trouvé pour cette requête.'})}\n\n"
+        yield "data:[DONE]\n\n"
         return
 
     user_message = f"Contexte:\n{context}\n\nQuestion: {request.query}"
 
-    client = _get_client()
+    client = _get_client(llm_config)
+    model = (llm_config or {}).get("model") or LLM_MODEL
     try:
         stream = client.chat.completions.create(
-            model=LLM_MODEL,
+            model=model,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_message},
@@ -74,8 +82,8 @@ async def stream_synthesis(conn, graph, request: SynthesisRequest) -> AsyncGener
         for chunk in stream:
             if chunk.choices and chunk.choices[0].delta.content:
                 content = chunk.choices[0].delta.content
-                yield {"event": "message", "data": json.dumps({"content": content})}
+                yield f"data:{json.dumps({'content': content})}\n\n"
 
-        yield {"event": "done", "data": ""}
+        yield "data:[DONE]\n\n"
     except Exception as e:
-        yield {"event": "error", "data": json.dumps({"error": str(e)})}
+        yield f"data:{json.dumps({'error': str(e)})}\n\n"

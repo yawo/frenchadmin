@@ -77,6 +77,11 @@ API_URL = os.getenv("API_URL", "https://openrouter.ai/api/v1")
 API_KEY = os.getenv("API_KEY", "your_api_key_here")
 LLM_MODEL = os.getenv("LLM_MODEL", "openrouter/hunter-alpha")
 
+# Authentication
+JWT_SECRET = os.getenv("JWT_SECRET", "change-me-in-production")
+JWT_EXPIRY_HOURS = int(os.getenv("JWT_EXPIRY_HOURS", "24"))
+FERNET_KEY = os.getenv("FERNET_KEY", "")
+
 # Embedding model configuration (downloaded and run locally via HuggingFace)
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
 
@@ -124,3 +129,9 @@ WRITE_CONCURRENCY = int(os.getenv("WRITE_CONCURRENCY", "1"))
 ENABLE_CPROFILE = _get_env_bool("ENABLE_CPROFILE", False)
 ENABLE_TRACEMALLOC = _get_env_bool("ENABLE_TRACEMALLOC", False)
 PERF_REPORTS_DIR = os.getenv("PERF_REPORTS_DIR", os.path.join(BASE_PATH, "data", "perf_reports"))
+
+# Reranker configuration
+RERANKER_MODEL = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
+RERANKER_MAX_LENGTH = int(os.getenv("RERANKER_MAX_LENGTH", "512"))
+RERANKER_BATCH_SIZE = int(os.getenv("RERANKER_BATCH_SIZE", "16"))
+RETRIEVAL_OVERSAMPLING_FACTOR = int(os.getenv("RETRIEVAL_OVERSAMPLING_FACTOR", "4"))

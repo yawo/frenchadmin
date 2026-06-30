@@ -28,7 +28,7 @@ export default function FilterPanel({ filters, onChange }: Props) {
 
   return (
     <div className="flex flex-wrap items-center gap-3 text-sm">
-      <span className="text-gray-500 font-medium">Sources:</span>
+      <span className="text-gray-500 dark:text-gray-400 font-medium">Sources:</span>
       {SOURCE_OPTIONS.map((opt) => (
         <button
           key={opt.value}
@@ -36,14 +36,14 @@ export default function FilterPanel({ filters, onChange }: Props) {
           className={`px-3 py-1 rounded-full font-medium transition-all ${
             filters.sourceTypes.includes(opt.value)
               ? opt.color
-              : "bg-gray-100 text-gray-400"
+              : "bg-gray-100 dark:bg-slate-700 text-gray-400 dark:text-gray-500"
           }`}
         >
           {opt.label}
         </button>
       ))}
       <div className="ml-4 flex items-center gap-2">
-        <label className="text-gray-500">Confiance min:</label>
+        <label className="text-gray-500 dark:text-gray-400">Confiance min:</label>
         <input
           type="range"
           min="0"
@@ -54,16 +54,16 @@ export default function FilterPanel({ filters, onChange }: Props) {
           }
           className="w-24"
         />
-        <span className="text-gray-700 w-10">
+        <span className="text-gray-700 dark:text-gray-300 w-10">
           {(filters.minConfidence * 100).toFixed(0)}%
         </span>
       </div>
       <div className="ml-4 flex items-center gap-2">
-        <label className="text-gray-500">Résultats:</label>
+        <label className="text-gray-500 dark:text-gray-400">Résultats:</label>
         <select
           value={filters.topK}
           onChange={(e) => onChange({ ...filters, topK: Number(e.target.value) })}
-          className="border border-gray-300 rounded px-2 py-1"
+          className="border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-gray-900 dark:text-gray-200 rounded px-2 py-1"
         >
           {[5, 10, 20, 50].map((n) => (
             <option key={n} value={n}>

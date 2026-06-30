@@ -35,7 +35,10 @@ dependencies = [
     "fastapi==0.115.0",
     "uvicorn[standard]==0.30.6",
     "sse-starlette==2.1.0",
-    "pydantic>=2.0"
+    "pydantic>=2.0",
+    "bcrypt>=4.0.0",
+    "PyJWT>=2.8.0",
+    "cryptography>=41.0.0"
 ]
 
 [project.urls]

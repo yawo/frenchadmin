@@ -4,6 +4,21 @@
 
 @layer base {
   body {
-    @apply min-h-screen;
+    @apply min-h-screen bg-gray-50 dark:bg-slate-900;
+  }
+}
+
+@layer utilities {
+  .animate-slide-in {
+    animation: slide-in 0.2s ease-out;
+  }
+}
+
+@keyframes slide-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
   }
 }

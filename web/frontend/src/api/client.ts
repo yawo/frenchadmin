@@ -2,19 +2,45 @@ import type {
   CrossRefListResponse,
   DocumentDetail,
   GraphData,
+  LLMSettings,
   SearchRequest,
   SearchResponse,
   SourceType,
   SynthesisRequest,
+  TokenResponse,
 } from "../types";
 
 const BASE = "/api";
+const TOKEN_KEY = "frenchadmin_token";
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+export function getToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setToken(token: string) {
+  localStorage.setItem(TOKEN_KEY, token);
+}
+
+export function clearToken() {
+  localStorage.removeItem(TOKEN_KEY);
+}
+
+function authHeaders(): Record<string, string> {
+  const token = getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function request<T>(path: string, options?: RequestInit & { skipAuthRedirect?: boolean }): Promise<T> {
+  const { skipAuthRedirect, ...fetchOptions } = options || {};
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
+    ...fetchOptions,
+    headers: { "Content-Type": "application/json", ...authHeaders(), ...fetchOptions?.headers },
   });
+  if (res.status === 401 && !skipAuthRedirect) {
+    clearToken();
+    window.location.href = "/login";
+    throw new Error("Session expired");
+  }
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`API error ${res.status}: ${text}`);
@@ -77,10 +103,15 @@ export async function* streamSynthesis(
 ): AsyncGenerator<string> {
   const res = await fetch(`${BASE}/synthesize`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(params),
   });
 
+  if (res.status === 401) {
+    clearToken();
+    window.location.href = "/login";
+    throw new Error("Session expired");
+  }
   if (!res.ok) {
     throw new Error(`Synthesis error ${res.status}`);
   }
@@ -100,18 +131,57 @@ export async function* streamSynthesis(
     buffer = lines.pop() || "";
 
     for (const line of lines) {
-      if (line.startsWith("data:")) {
-        const data = line.slice(5).trim();
-        if (!data) continue;
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed.content) {
-            yield parsed.content;
-          }
-        } catch {
-          // skip malformed SSE
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const data = trimmed.slice(5).trim();
+      if (!data || data === "[DONE]") continue;
+      try {
+        const parsed = JSON.parse(data);
+        if (parsed.error) {
+          throw new Error(parsed.error);
         }
+        if (parsed.content) {
+          yield parsed.content;
+        }
+      } catch (e) {
+        if (e instanceof SyntaxError) continue;
+        throw e;
       }
     }
   }
+}
+
+export function authRegister(username: string, password: string): Promise<TokenResponse> {
+  return request("/auth/register", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+    skipAuthRedirect: true,
+  });
+}
+
+export function authLogin(username: string, password: string): Promise<TokenResponse> {
+  return request("/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+    skipAuthRedirect: true,
+  });
+}
+
+export function authMe(): Promise<{ id: string; username: string }> {
+  return request("/auth/me", { skipAuthRedirect: true });
+}
+
+export function getLLMSettings(): Promise<LLMSettings> {
+  return request("/settings/llm");
+}
+
+export function updateLLMSettings(data: {
+  llm_model?: string | null;
+  llm_base_url?: string | null;
+  llm_api_key?: string | null;
+}): Promise<LLMSettings> {
+  return request("/settings/llm", {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
 }

@@ -32,6 +32,13 @@ Requires-Dist: transformers==5.5.0
 Requires-Dist: sentence-transformers==5.3.0
 Requires-Dist: falkordb==1.6.0
 Requires-Dist: rapidfuzz==3.13.0
+Requires-Dist: fastapi==0.115.0
+Requires-Dist: uvicorn[standard]==0.30.6
+Requires-Dist: sse-starlette==2.1.0
+Requires-Dist: pydantic>=2.0
+Requires-Dist: bcrypt>=4.0.0
+Requires-Dist: PyJWT>=2.8.0
+Requires-Dist: cryptography>=41.0.0
 Provides-Extra: dev
 Requires-Dist: ruff; extra == "dev"
 Dynamic: license-file
@@ -321,6 +328,187 @@ This script will:
     C. Family-prior deterministic → 0.84
     D. Fuzzy scoped (rapidfuzz, ≥96) → 0.74
     E. Semantic scoped (cosine <=>) → 0.62
+
+## GraphRAG Web Interface
+
+The project includes a full GraphRAG frontend for querying the knowledge graph, performing vector search, and generating LLM-synthesized answers.
+
+### Architecture
+
+```
+[React Frontend (Vite + TypeScript + Tailwind)]
+        |
+        v  (REST + SSE)
+[FastAPI Backend]
+        |
+   +----+----+
+   |         |
+   v         v
+[PostgreSQL] [FalkorDB]
+ (pgvector)   (Cypher)
+```
+
+- **Backend**: FastAPI serving REST endpoints + SSE streaming for LLM synthesis
+- **Frontend**: React with react-force-graph-2d for interactive graph visualization
+- **LLM**: OpenRouter (configurable model) for RAG answer generation
+
+### Features
+
+| Feature | Description |
+|---------|-------------|
+| **Natural language search** | Cosine similarity search across LEGI, JADE, BOFiP with graph augmentation |
+| **Graph Explorer** | Interactive force-directed visualization of the knowledge graph |
+| **Cross-Reference Browser** | Paginated table of inferred JADE/BOFiP → LEGI links with confidence scores |
+| **Document Detail** | Full document view with metadata, chunks, and cross-references |
+| **LLM Synthesis** | Streaming answers grounded in retrieved documents via OpenRouter |
+
+### Prerequisites
+
+- PostgreSQL + FalkorDB running (via `docker compose up -d`)
+- Data already processed and loaded (`mediatech process_files --all --model BAAI/bge-m3`)
+- Cross-references inferred (`mediatech infer_crossreferences --source all --model BAAI/bge-m3`)
+- Node.js 18+ (for frontend build)
+- Python 3.10+ with project dependencies installed
+
+### Setup
+
+#### Option 1: Docker (recommended for production)
+
+```bash
+# Set required environment variables in .env:
+#   API_URL=https://openrouter.ai/api/v1
+#   API_KEY=your_openrouter_api_key
+#   LLM_MODEL=openrouter/hunter-alpha
+
+docker compose up --build
+```
+
+The web interface will be available at `http://localhost:8080`.
+
+#### Option 2: Local development
+
+**1. Install Python dependencies:**
+
+```bash
+pip install -e .
+```
+
+This installs FastAPI, Uvicorn, SSE-Starlette, and all other dependencies.
+
+**2. Install frontend dependencies and build:**
+
+```bash
+cd web/frontend
+npm install
+npm run build
+cd ../..
+```
+
+**3. Start the backend (serves both API and built frontend):**
+
+```bash
+uvicorn web.app:app --reload --port 8080
+```
+
+The app is available at `http://localhost:8080`.
+
+**4. (Optional) Frontend dev mode with hot-reload:**
+
+```bash
+# Terminal 1: backend
+uvicorn web.app:app --reload --port 8080
+
+# Terminal 2: frontend dev server (proxies /api to backend)
+cd web/frontend
+npm run dev
+```
+
+Frontend dev server runs at `http://localhost:5173` with API proxy to port 8080.
+
+### API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/search` | GraphRAG search (vector + graph fusion) |
+| `POST` | `/api/graph/neighbors` | Get N-hop graph neighborhood |
+| `GET` | `/api/graph/context/{doc_id}` | Get all relationships for a document |
+| `GET` | `/api/graph/subgraph?doc_ids=...` | Get subgraph connecting documents |
+| `GET` | `/api/documents/{source_type}/{doc_id}` | Full document detail |
+| `GET` | `/api/crossrefs` | Paginated cross-reference listing |
+| `POST` | `/api/synthesize` | LLM RAG synthesis (SSE streaming) |
+| `GET` | `/api/health` | Health check |
+
+### Search Request Example
+
+```bash
+curl -X POST http://localhost:8080/api/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "conditions application article 200 CGI",
+    "source_types": ["legi", "jade"],
+    "top_k": 10,
+    "min_confidence": 0.6
+  }'
+```
+
+### Configuration
+
+The GraphRAG web interface uses the same environment variables as the rest of the project:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `POSTGRES_HOST` | `localhost` | PostgreSQL host |
+| `POSTGRES_PORT` | `5433` | PostgreSQL port |
+| `POSTGRES_DB` | `mediatech` | Database name |
+| `POSTGRES_USER` | `user` | Database user |
+| `POSTGRES_PASSWORD` | `password` | Database password |
+| `FALKORDB_HOST` | `localhost` | FalkorDB host |
+| `FALKORDB_PORT` | `6379` | FalkorDB port |
+| `FALKORDB_GRAPH_NAME` | `frenchadmin` | Graph name |
+| `EMBEDDING_MODEL` | `BAAI/bge-m3` | Embedding model (384-dim) |
+| `API_URL` | `https://openrouter.ai/api/v1` | LLM API base URL |
+| `API_KEY` | — | OpenRouter API key |
+| `LLM_MODEL` | `openrouter/hunter-alpha` | LLM model for synthesis |
+| `WEB_PORT` | `8080` | Web server port (Docker) |
+
+### Query Flow
+
+1. User enters a natural language query in French
+2. Query is embedded using BAAI/bge-m3 (384-dim)
+3. Cosine similarity search runs across LEGI, JADE, BOFiP tables (pgvector HNSW)
+4. Top results are expanded via FalkorDB graph traversal (APPLIES_TO, INTERPRETS, REFERENCES edges)
+5. Results are re-ranked by composite score: `0.6 × similarity + 0.25 × edge_confidence + 0.15 × graph_degree`
+6. (Optional) Retrieved context is sent to LLM for synthesized answer with source citations
+
+### Project Structure (web/)
+
+```
+web/
+├── app.py                    # FastAPI application + SPA serving
+├── dependencies.py           # DB pool + graph connection injection
+├── models/
+│   └── schemas.py            # Pydantic request/response models
+├── routers/
+│   ├── search.py             # POST /api/search
+│   ├── graph.py              # Graph exploration endpoints
+│   ├── documents.py          # Document detail endpoint
+│   ├── crossrefs.py          # Cross-reference browser
+│   └── synthesize.py         # LLM synthesis (SSE)
+├── services/
+│   ├── embedding.py          # Query embedding wrapper
+│   ├── vector_search.py      # pgvector cosine search
+│   ├── graph_search.py       # FalkorDB Cypher queries
+│   ├── retrieval.py          # GraphRAG fusion orchestrator
+│   └── synthesis.py          # LLM answer generation
+└── frontend/
+    ├── package.json
+    ├── vite.config.ts
+    └── src/
+        ├── components/       # React UI components
+        ├── hooks/            # Custom React hooks
+        ├── api/client.ts     # API client + SSE helper
+        └── types/index.ts    # TypeScript type definitions
+```
 
 ## ⚖️ License
 
