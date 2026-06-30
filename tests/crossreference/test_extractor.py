@@ -112,6 +112,23 @@ def test_lowercase_words_are_not_captured_as_alpha_suffix():
     assert token == "1745"
 
 
+def test_alpha_hyphen_digit_pattern():
+    """§7.5: patterns like '10 G-0 bis' must be fully extracted."""
+    mentions = _mentions("article 10 G-0 bis du CGI")
+    assert len(mentions) == 1
+    matched, token, _, _, _ = mentions[0]
+    assert token == "10 G-0 bis"
+    assert normalize_article_number(token) == "10 G-0 BIS"
+
+
+def test_alpha_hyphen_digit_without_ordinal():
+    mentions = _mentions("article 10 B-0 du CGI")
+    assert len(mentions) == 1
+    _, token, _, _, _ = mentions[0]
+    assert token == "10 B-0"
+    assert normalize_article_number(token) == "10 B-0"
+
+
 def test_empty_input_is_safe():
     assert _mentions("") == []
     assert _mentions(None) == []

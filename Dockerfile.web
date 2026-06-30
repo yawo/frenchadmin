@@ -1,0 +1,30 @@
+FROM node:20-slim AS frontend-build
+WORKDIR /app/frontend
+COPY web/frontend/package.json web/frontend/package-lock.json* ./
+RUN npm install
+COPY web/frontend/ ./
+RUN npm run build
+
+FROM python:3.11-slim
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc libpq-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml ./
+COPY config/ config/
+COPY database/ database/
+COPY utils/ utils/
+COPY crossreference/ crossreference/
+COPY download_and_processing/ download_and_processing/
+COPY web/ web/
+COPY main.py ./
+
+RUN pip install --no-cache-dir -e .
+
+COPY --from=frontend-build /app/frontend/dist web/frontend/dist
+
+EXPOSE 8000
+
+CMD ["uvicorn", "web.app:app", "--host", "0.0.0.0", "--port", "8000"]

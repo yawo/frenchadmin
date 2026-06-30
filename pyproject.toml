@@ -31,7 +31,11 @@ dependencies = [
     "transformers==5.5.0",
     "sentence-transformers==5.3.0",
     "falkordb==1.6.0",
-    "rapidfuzz==3.13.0"
+    "rapidfuzz==3.13.0",
+    "fastapi==0.115.0",
+    "uvicorn[standard]==0.30.6",
+    "sse-starlette==2.1.0",
+    "pydantic>=2.0"
 ]
 
 [project.urls]
@@ -47,7 +51,7 @@ dev = [
 mediatech = "main:main"
 
 [tool.setuptools.packages.find]
-include = ["config*", "database*", "download_and_processing*", "utils*", "crossreference*"]
+include = ["config*", "database*", "download_and_processing*", "utils*", "crossreference*", "web*"]
 
 [tool.setuptools]
 py-modules = ["main"]

@@ -41,6 +41,10 @@ from crossreference.normalizer import (
         # L.O. prefix gap collapse.
         ("L.O. 234-5", "L.O.234-5"),
         ("article L.O. 111-9", "L.O.111-9"),
+        # Alpha-hyphen-digit patterns (§7.5: "10 G-0 bis" structure).
+        ("article 10 G-0 bis", "10 G-0 BIS"),
+        ("article 10 B-0 du CGI", "10 B-0"),
+        ("article 1 A-0 bis du CGI", "1 A-0 BIS"),
         # No-tail inputs stay untouched.
         ("article 1", "1"),
     ],

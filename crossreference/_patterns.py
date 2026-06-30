@@ -18,14 +18,14 @@ ARTICLE_TOKEN_RE = re.compile(
     r"""
     (?:
         (?:L\.O\.|[LRDA])(?:\*)?\s*[-.]?\s*\d+(?:-\d+)*
-        (?:\s+(?-i:[A-Z]{1,3}))*
+        (?:\s+(?-i:[A-Z]{1,3})(?:-\d+(?:-\d+)*)?)*
         (?:\s+(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies|undecies|duodecies|terdecies|quaterdecies|quindecies|sexdecies|septdecies|octodecies|novodecies|vicies)|(?:er|ère|ers))?
-        (?:\s+(?-i:[A-Z]{1,3}))*
+        (?:\s+(?-i:[A-Z]{1,3})(?:-\d+(?:-\d+)*)?)*
         |
         \d+(?:-\d+)*
-        (?:\s+(?-i:[A-Z]{1,3}))*
+        (?:\s+(?-i:[A-Z]{1,3})(?:-\d+(?:-\d+)*)?)*
         (?:\s+(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies|undecies|duodecies|terdecies|quaterdecies|quindecies|sexdecies|septdecies|octodecies|novodecies|vicies)|(?:er|ère|ers))?
-        (?:\s+(?-i:[A-Z]{1,3}))*
+        (?:\s+(?-i:[A-Z]{1,3})(?:-\d+(?:-\d+)*)?)*
     )
     """,
     re.IGNORECASE | re.VERBOSE,

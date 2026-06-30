@@ -34,7 +34,33 @@ services:
       - "${FALKORDBUI_PORT:-3000}:3000"
     volumes:
       - falkordb_data:/data
-  
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: graphrag-web
+    restart: always
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    environment:
+      RUNNING_IN_DOCKER: "true"
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      FALKORDB_HOST: falkordb
+      FALKORDB_PORT: "6379"
+      FALKORDB_PASSWORD: ${FALKORDB_PASSWORD:-}
+      FALKORDB_GRAPH_NAME: ${FALKORDB_GRAPH_NAME:-frenchadmin}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-m3}
+      API_URL: ${API_URL:-https://openrouter.ai/api/v1}
+      API_KEY: ${API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-openrouter/hunter-alpha}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      falkordb:
+        condition: service_healthy
 
 volumes:
   pgvector_data:

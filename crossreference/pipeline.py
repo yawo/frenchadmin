@@ -113,21 +113,8 @@ def infer_crossreferences(
                     logger.debug(f"Skipping {src} doc {doc_info['doc_id']}: hash unchanged")
                     continue
                 if hashes_match and not stored_state.get("graph_sync_ok"):
-                    # Rebuild mentions/edges before retrying graph sync to avoid stale cache
-                    mentions = _process_source_document(
-                        source_type=src,
-                        doc_info=doc_info,
-                        catalog_hash=catalog_hash,
-                        model=model,
-                        debug=debug,
-                    )
-                    with get_connection() as conn:
-                        cursor = conn.cursor()
-                        delete_mentions_and_edges_for_doc(cursor, src, doc_info["doc_id"])
-                        insert_mentions_batch(cursor, mentions)
-                        aggregate_and_upsert_edges(cursor, src, doc_info["doc_id"])
-                        conn.commit()
-                    
+                    # Content unchanged, catalog unchanged, pipeline version unchanged.
+                    # PostgreSQL already has correct mentions/edges. Only retry graph injection.
                     graph_sync_ok = inject_cross_reference_edges(src, doc_info["doc_id"])
                     _upsert_source_state(
                         source_type=src,
@@ -136,14 +123,14 @@ def infer_crossreferences(
                         catalog_hash=catalog_hash,
                         graph_sync_ok=graph_sync_ok,
                     )
-                    logger.debug(
-                        f"[{src}] {doc_info['doc_id']}: rebuilt mentions and retried graph sync "
-                        f"(graph_sync_ok={graph_sync_ok})"
-                    )
                     if not graph_sync_ok:
                         failed_docs += 1
                         logger.error(
                             f"[{src}] Graph sync retry failed for doc {doc_info['doc_id']}"
+                        )
+                    else:
+                        logger.debug(
+                            f"[{src}] {doc_info['doc_id']}: graph sync retry succeeded"
                         )
                     continue
 
@@ -244,7 +231,7 @@ def _aggregate_jade_documents() -> list[dict]:
                 MIN(jurisdiction) AS jurisdiction,
                 MIN(formation) AS formation,
                 MIN(decision_date)::date AS source_date,
-                MD5(string_agg(chunk_xxh64, '' ORDER BY chunk_index)) AS source_hash
+                MD5(string_agg(COALESCE(chunk_xxh64, ''), '' ORDER BY chunk_index)) AS source_hash
             FROM jade
             WHERE decision_date IS NOT NULL
             GROUP BY doc_id
@@ -276,7 +263,7 @@ def _aggregate_bofip_documents() -> list[dict]:
                 MIN(title) AS title,
                 MIN(category_path) AS category_path,
                 MIN(publication_date)::date AS source_date,
-                MD5(string_agg(chunk_xxh64, '' ORDER BY chunk_index)) AS source_hash
+                MD5(string_agg(COALESCE(chunk_xxh64, ''), '' ORDER BY chunk_index)) AS source_hash
             FROM bofip
             WHERE publication_date IS NOT NULL
             GROUP BY doc_id
@@ -396,9 +383,7 @@ def _process_source_document(
         normalized = raw["normalized_number"]
         if not normalized:
             continue
-        # Track (normalized_number, chunk_id) pair to detect article reuse across chunks
-        key = (normalized, raw["source_chunk_id"])
-        repeated_in_chunks_map.setdefault(normalized, set()).add(key)
+        repeated_in_chunks_map.setdefault(normalized, set()).add(raw["source_chunk_id"])
 
     # Resolve each mention
     mentions = []

@@ -723,11 +723,9 @@ The parser must support at least:
 - suffix letters followed by hyphen-digit chains such as `G-0` in `10 G-0 bis`
 - French ordinal suffixes such as `bis`, `ter`, `quater`, `quinquies`, `sexies`, `septies`, `octies`, `nonies`, `decies`, `undecies`, `duodecies`, `terdecies`
 
-Known gap (current implementation):
-- patterns like `10 G-0 bis` (alpha suffix followed by hyphen-digits) are only
-  partially matched as `10 G`; the trailing `-0 bis` is lost. This is a phase-2
-  enhancement — the regex alpha-tail groups need optional `(?:-\d+(?:-\d+)*)?`
-  continuations to handle this numbering structure.
+Note: patterns like `10 G-0 bis` (alpha suffix followed by hyphen-digits) are
+supported — the regex alpha-tail groups include optional `(?:-\d+(?:-\d+)*)?`
+continuations to handle this numbering structure.
 
 Minimal extraction regex for a single token:
 
@@ -1406,10 +1404,9 @@ For each source document:
   already holds correct mentions and edges, since the triple hash matched)
 - else skip
 
-Implementation note: the current pipeline defensively rebuilds mentions before
-retrying graph injection (rather than trusting the existing PostgreSQL state).
-This is functionally correct but wastes CPU. A future optimization should
-switch to graph-retry-only when all three hashes match.
+Implementation note: when all three hashes match but `graph_sync_ok` is false,
+the pipeline retries graph injection only — it trusts that PostgreSQL already
+holds correct mentions and edges since no inference input has changed.
 
 ### 14.4 Catalog refresh condition
 
