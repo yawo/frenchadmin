@@ -66,6 +66,7 @@ Key capabilities:
    - `falkor` - FalkorDB (graph database)
 
 #### Downloading, Processing and Uploading Data
+*IMPORTANT*: Clean config/data_history.json
 
 ##### Using the `mediatech` Command
 
@@ -148,6 +149,15 @@ Examples:
 python main.py download_files
 python main.py create_tables --model BAAI/bge-m3
 python main.py process_files --all --model BAAI/bge-m3
+```
+
+### Hugging Face download
+```
+pip install -U hf_transfer
+pip install -U huggingface_hub
+
+
+
 ```
 
 ### Performance and Optimization Flags

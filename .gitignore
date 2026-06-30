@@ -73,3 +73,4 @@ htmlcov/
 data/experimental/ 
 data/perf_reports/ 
 data/selected/     
+config/data_history.json

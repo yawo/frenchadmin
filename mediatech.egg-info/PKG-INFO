@@ -39,11 +39,12 @@ Requires-Dist: pydantic>=2.0
 Requires-Dist: bcrypt>=4.0.0
 Requires-Dist: PyJWT>=2.8.0
 Requires-Dist: cryptography>=41.0.0
+Requires-Dist: FlagEmbedding>=1.2.0
 Provides-Extra: dev
 Requires-Dist: ruff; extra == "dev"
 Dynamic: license-file
 
-# FrenchAdmin
+# TaxFrance
 
 [![License](https://img.shields.io/github/license/etalab-ia/mediatech?label=licence&color=red)](https://github.com/etalab-ia/mediatech/blob/main/LICENSE)
 [![French version](https://img.shields.io/badge/🇫🇷-French%20version-blue)](./docs/README_fr.md)
@@ -166,6 +167,14 @@ Command examples:
 - Upload parquet datasets to the Hugging Face repository:
   ```bash
    mediatech upload_dataset --input data/parquet/bofip.parquet --dataset-name bofip
+  ```
+- Add full-text search columns for hybrid search (only needed for databases created before this feature — fresh installs get it via `create_tables`):
+  ```bash
+  mediatech add_fts_columns
+  ```
+- Generate BGE-M3 sparse embeddings for 3-way retrieval fusion (required after `process_files`):
+  ```bash
+  mediatech add_sparse_embeddings
   ```
 
 
@@ -365,10 +374,21 @@ The project includes a full GraphRAG frontend for querying the knowledge graph, 
 ### Prerequisites
 
 - PostgreSQL + FalkorDB running (via `docker compose up -d`)
-- Data already processed and loaded (`mediatech process_files --all --model BAAI/bge-m3`)
-- Cross-references inferred (`mediatech infer_crossreferences --source all --model BAAI/bge-m3`)
 - Node.js 18+ (for frontend build)
 - Python 3.10+ with project dependencies installed
+
+#### Fresh install pipeline (run in order)
+
+```bash
+mediatech create_tables --model BAAI/bge-m3          # Creates tables + FTS columns/triggers + sparse column
+mediatech download_and_process_files --all --model BAAI/bge-m3  # Download, chunk, embed, insert
+mediatech add_sparse_embeddings                       # Generate BGE-M3 sparse lexical weights
+mediatech infer_crossreferences --source all --model BAAI/bge-m3  # Link JADE/BOFiP → LEGI
+```
+
+> **Note**: `add_fts_columns` is NOT needed on fresh installs — the FTS trigger is created by `create_tables`. Only run it on databases that predate the hybrid search feature.
+
+> **Note**: `add_sparse_embeddings` must be run after data is loaded. There is no trigger for sparse embeddings (encoding requires the FlagEmbedding model).
 
 ### Setup
 
@@ -470,15 +490,30 @@ The GraphRAG web interface uses the same environment variables as the rest of th
 | `API_KEY` | — | OpenRouter API key |
 | `LLM_MODEL` | `openrouter/hunter-alpha` | LLM model for synthesis |
 | `WEB_PORT` | `8080` | Web server port (Docker) |
+| `RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | Cross-encoder for relevance reranking |
+| `RERANKER_MAX_LENGTH` | `1024` | Max tokens the reranker sees per document |
+| `RERANKER_MIN_SCORE` | `0.01` | Minimum reranker score to keep a result |
+| `ENABLE_HYBRID_SEARCH` | `true` | Combine vector + full-text + sparse search via RRF |
+| `RRF_K` | `60` | RRF smoothing constant |
+| `FTS_WEIGHT` | `1.0` | Relative weight of FTS vs vector in RRF |
+| `FTS_MODE` | `auto` | FTS strategy: `auto` (AND for ≤3 words, OR for 4+), `and`, `or` |
+| `ENABLE_QUERY_EXPANSION` | `true` | Expand legal acronyms and synonyms before search |
+| `ENABLE_SPARSE_SEARCH` | `true` | BGE-M3 sparse retrieval (requires `add_sparse_embeddings`) |
+| `SPARSE_WEIGHT` | `1.0` | Relative weight of sparse retrieval in RRF |
 
 ### Query Flow
 
 1. User enters a natural language query in French
-2. Query is embedded using BAAI/bge-m3 (384-dim)
-3. Cosine similarity search runs across LEGI, JADE, BOFiP tables (pgvector HNSW)
+2. **Query expansion**: legal acronyms (EURL→"entreprise unipersonnelle…") and synonyms (dirigeant→gérant) are appended
+3. **3-way hybrid retrieval** (oversampled 4×):
+   - Dense: query embedded via BAAI/bge-m3 (1024-dim) → cosine similarity search via pgvector HNSW
+   - FTS: adaptive AND/OR `plainto_tsquery('french', ...)` on title-weighted tsvector GIN indexes
+   - Sparse: BGE-M3 learned lexical weights → JSONB key overlap + dot product scoring
+   - All three result lists fused using Reciprocal Rank Fusion (RRF)
 4. Top results are expanded via FalkorDB graph traversal (APPLIES_TO, INTERPRETS, REFERENCES edges)
-5. Results are re-ranked by composite score: `0.6 × similarity + 0.25 × edge_confidence + 0.15 × graph_degree`
-6. (Optional) Retrieved context is sent to LLM for synthesized answer with source citations
+5. Cross-encoder reranking (BAAI/bge-reranker-v2-m3) assigns sigmoid-normalized relevance scores
+6. Results below `RERANKER_MIN_SCORE` are filtered out
+7. (Optional) Retrieved context is sent to LLM for synthesized answer with source citations
 
 ### Project Structure (web/)
 
@@ -496,7 +531,10 @@ web/
 │   └── synthesize.py         # LLM synthesis (SSE)
 ├── services/
 │   ├── embedding.py          # Query embedding wrapper
-│   ├── vector_search.py      # pgvector cosine search
+│   ├── query_expansion.py    # Legal acronym/synonym expansion
+│   ├── sparse_embedding.py   # BGE-M3 sparse lexical weights
+│   ├── vector_search.py      # Hybrid search (dense + FTS + sparse + RRF)
+│   ├── reranker.py           # Cross-encoder reranking
 │   ├── graph_search.py       # FalkorDB Cypher queries
 │   ├── retrieval.py          # GraphRAG fusion orchestrator
 │   └── synthesis.py          # LLM answer generation
@@ -509,6 +547,62 @@ web/
         ├── api/client.ts     # API client + SSE helper
         └── types/index.ts    # TypeScript type definitions
 ```
+
+## 💾 Exporting & Restoring the Database
+
+### PostgreSQL (pg_dump)
+
+**Export:**
+```bash
+pg_dump -h localhost -p 5433 -U user -d mediatech -F c -f mediatech.dump
+```
+
+**Restore on another machine:**
+```bash
+# Create the database first if it doesn't exist
+createdb -h localhost -p 5433 -U user mediatech
+pg_restore -h localhost -p 5433 -U user -d mediatech mediatech.dump
+```
+
+### FalkorDB (Redis RDB snapshot)
+
+**Export:**
+```bash
+# Trigger a background save
+docker exec falkor redis-cli BGSAVE
+# Wait a moment, then copy the dump file
+docker cp falkor:/data/dump.rdb ./falkordb_dump.rdb
+```
+
+**Restore on another machine:**
+```bash
+# Place the dump before starting the container
+cp falkordb_dump.rdb /path/to/your/falkordb/data/dump.rdb
+docker compose up -d falkor
+```
+
+### Docker volume copy (all-in-one)
+
+If both machines use the same `docker-compose.yml`:
+
+**Export:**
+```bash
+docker compose stop
+tar -czf frenchadmin_data.tar.gz \
+  $(docker volume inspect frenchadmin_pg_data --format '{{.Mountpoint}}') \
+  $(docker volume inspect frenchadmin_falkor_data --format '{{.Mountpoint}}')
+docker compose start
+```
+
+**Restore:**
+```bash
+# Transfer frenchadmin_data.tar.gz to target machine, then:
+docker compose stop
+sudo tar -xzf frenchadmin_data.tar.gz -C /
+docker compose up -d
+```
+
+> **Tip:** The project also provides `scripts/backup.sh` and `scripts/restore.sh` which automate PostgreSQL volume backup and restoration.
 
 ## ⚖️ License
 

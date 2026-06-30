@@ -56,7 +56,9 @@ web/routers/synthesize.py
 web/services/__init__.py
 web/services/embedding.py
 web/services/graph_search.py
+web/services/query_expansion.py
 web/services/reranker.py
 web/services/retrieval.py
+web/services/sparse_embedding.py
 web/services/synthesis.py
 web/services/vector_search.py
