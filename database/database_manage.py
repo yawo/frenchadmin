@@ -385,6 +385,7 @@ def create_all_tables(model=EMBEDDING_MODEL, delete_existing: bool = False):
                 _ensure_hnsw_index(cursor, table_name, model_name)
                 _ensure_doc_id_index(cursor, table_name)
                 _ensure_fts_column(cursor, table_name)
+                _ensure_sparse_column(cursor, table_name)
 
             conn.commit()
             logger.info(

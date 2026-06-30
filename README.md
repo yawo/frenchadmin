@@ -122,11 +122,11 @@ Command examples:
   ```bash
    mediatech upload_dataset --input data/parquet/bofip.parquet --dataset-name bofip
   ```
-- Add full-text search columns for hybrid search (required after first `create_tables` or on existing databases):
+- Add full-text search columns for hybrid search (only needed for databases created before this feature — fresh installs get it via `create_tables`):
   ```bash
   mediatech add_fts_columns
   ```
-- Generate BGE-M3 sparse embeddings for 3-way retrieval fusion (requires FlagEmbedding):
+- Generate BGE-M3 sparse embeddings for 3-way retrieval fusion (required after `process_files`):
   ```bash
   mediatech add_sparse_embeddings
   ```
@@ -328,12 +328,21 @@ The project includes a full GraphRAG frontend for querying the knowledge graph, 
 ### Prerequisites
 
 - PostgreSQL + FalkorDB running (via `docker compose up -d`)
-- Data already processed and loaded (`mediatech process_files --all --model BAAI/bge-m3`)
-- Full-text search columns added (`mediatech add_fts_columns`)
-- Sparse embeddings generated (`mediatech add_sparse_embeddings`)
-- Cross-references inferred (`mediatech infer_crossreferences --source all --model BAAI/bge-m3`)
 - Node.js 18+ (for frontend build)
 - Python 3.10+ with project dependencies installed
+
+#### Fresh install pipeline (run in order)
+
+```bash
+mediatech create_tables --model BAAI/bge-m3          # Creates tables + FTS columns/triggers + sparse column
+mediatech download_and_process_files --all --model BAAI/bge-m3  # Download, chunk, embed, insert
+mediatech add_sparse_embeddings                       # Generate BGE-M3 sparse lexical weights
+mediatech infer_crossreferences --source all --model BAAI/bge-m3  # Link JADE/BOFiP → LEGI
+```
+
+> **Note**: `add_fts_columns` is NOT needed on fresh installs — the FTS trigger is created by `create_tables`. Only run it on databases that predate the hybrid search feature.
+
+> **Note**: `add_sparse_embeddings` must be run after data is loaded. There is no trigger for sparse embeddings (encoding requires the FlagEmbedding model).
 
 ### Setup
 
