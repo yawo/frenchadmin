@@ -38,6 +38,9 @@ from crossreference.normalizer import (
         ("L123-9-1", "L123-9-1"),
         ("R*196-1", "R*196-1"),
         ("42 septies", "42 SEPTIES"),
+        # L.O. prefix gap collapse.
+        ("L.O. 234-5", "L.O.234-5"),
+        ("article L.O. 111-9", "L.O.111-9"),
         # No-tail inputs stay untouched.
         ("article 1", "1"),
     ],

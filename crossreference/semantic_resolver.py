@@ -17,8 +17,8 @@ from utils import format_model_name, generate_embeddings_with_retry
 
 logger = get_logger(__name__)
 
-SEMANTIC_MIN_SCORE = 0.75
-SEMANTIC_CODE_ALIASED_MIN = 0.85
+SEMANTIC_THRESHOLD_WITH_ALIAS = 0.75
+SEMANTIC_THRESHOLD_NO_ALIAS = 0.85
 _MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 _TAX_CORE_PARENT_IDS = sorted({
     parent_id
@@ -163,7 +163,7 @@ def semantic_resolve(
         return None
 
     # With explicit code alias, trust lower scores; without, require higher confidence
-    min_score = SEMANTIC_MIN_SCORE if has_code_alias else SEMANTIC_CODE_ALIASED_MIN
+    min_score = SEMANTIC_THRESHOLD_WITH_ALIAS if has_code_alias else SEMANTIC_THRESHOLD_NO_ALIAS
 
     if score < min_score:
         logger.debug(

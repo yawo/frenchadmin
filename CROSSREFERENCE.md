@@ -660,8 +660,16 @@ v1 segmentation strategy:
   - `^Vu la procedure`
   - `^Consid[eé]rant`
   - `^Aux termes de l'article`
-  - `^Sur`
+  - `^Sur le moyen` / `^Sur le fondement` / `^Sur le bien-fondé`
 - score mentions higher when found near these markers
+- recommended detection regex (for the +0.05 confidence boost):
+  ```python
+  _VU_PATTERN = re.compile(
+      r'\b(?:Vu\s+la|Vu\s+le|Vu\s+.*?proc[eé]dure|VU|Consid[eé]rant|Aux\s+termes\s+de\s+l|Sur\s+le\s+(?:moyen|fondement|bien-fond[eé]))\b',
+      re.IGNORECASE,
+  )
+  ```
+  Note: bare `Sur` is too broad (fires on `Sur les dépens`, `Sur ce point`). Restrict to legal-reasoning patterns that signal intentional article citation.
 
 Important:
 - because current parser prefers `<ANA>` when present, some decisions will have no `VU` structure to segment
@@ -712,7 +720,14 @@ The parser must support at least:
 - letter prefixes such as `L`, `R`, `D`, `A` (plus `L.O.`)
 - optional star after prefix, such as `R*`
 - spaced suffix letters such as `A`, `B`, `AA`, `ZH`
+- suffix letters followed by hyphen-digit chains such as `G-0` in `10 G-0 bis`
 - French ordinal suffixes such as `bis`, `ter`, `quater`, `quinquies`, `sexies`, `septies`, `octies`, `nonies`, `decies`, `undecies`, `duodecies`, `terdecies`
+
+Known gap (current implementation):
+- patterns like `10 G-0 bis` (alpha suffix followed by hyphen-digits) are only
+  partially matched as `10 G`; the trailing `-0 bis` is lost. This is a phase-2
+  enhancement — the regex alpha-tail groups need optional `(?:-\d+(?:-\d+)*)?`
+  continuations to handle this numbering structure.
 
 Minimal extraction regex for a single token:
 
@@ -803,6 +818,8 @@ Rules:
   `L. 247` → `L247`, `L 53` → `L53`. Preserve `R*196-1` (the star branch is
   excluded). This aligns mention keys with LEGI's stored convention
   (`L123-3`, never `L. 123-3`).
+- collapse `L.O. <space>+ <digit>` → `L.O.<digit>`, e.g.
+  `L.O. 234-5` → `L.O.234-5`. Same rationale: LEGI stores the compact form.
 - remove spaces around hyphens
 - remove spaces between prefix and star: `R* 196-1` → `R*196-1`
 - uppercase
@@ -818,6 +835,7 @@ normalize_article_number("art. 150-0 A") == "150-0 A"
 normalize_article_number("article R* 196-1") == "R*196-1"
 normalize_article_number("article 1012 ter A") == "1012 TER A"
 normalize_article_number("article 01 bis") == "1 BIS"
+normalize_article_number("article L.O. 234-5") == "L.O.234-5"
 
 # Trailing code-name clause must be stripped:
 normalize_article_number("1745 du code général des impôts") == "1745"
@@ -1022,7 +1040,9 @@ Rules:
 - compare both `normalized_number` and `normalized_number_loose`
 - minimum score: `96`
 - reject if top-2 scores are too close, for example delta `< 2`
-- reject if fuzzy match changes both numeric and alpha structure too much
+- reject if fuzzy match changes the numeric sequence (different digit groups)
+  OR changes the alpha prefix (e.g. `L` vs `R`). Either change alone is
+  sufficient to reject — the word "both" in earlier drafts was misleading
 
 Good use cases:
 - OCR spacing drift
@@ -1354,14 +1374,44 @@ Store the hash in both:
 - `cross_reference_legi_mentions.source_hash`
 - `cross_reference_legi_edges.source_hash`
 
-### 14.2 Re-run condition
+### 14.2 Source state tracking table
+
+The incremental-skip decision is tracked in `cross_reference_source_state`:
+
+```sql
+CREATE TABLE IF NOT EXISTS cross_reference_source_state (
+    source_type TEXT NOT NULL CHECK (source_type IN ('jade', 'bofip')),
+    source_doc_id TEXT NOT NULL,
+    source_hash TEXT NOT NULL,
+    catalog_hash TEXT NOT NULL DEFAULT '',
+    pipeline_version TEXT NOT NULL DEFAULT '',
+    graph_sync_ok BOOLEAN NOT NULL DEFAULT false,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (source_type, source_doc_id)
+);
+```
+
+- `source_hash`: content fingerprint of the source document (§14.1)
+- `catalog_hash`: SHA-1 of the catalog snapshot used for resolution
+- `pipeline_version`: value of `crossreference._version.PIPELINE_VERSION` at run time
+- `graph_sync_ok`: whether FalkorDB edge injection succeeded
+
+### 14.3 Re-run condition
 
 For each source document:
-- if no edges exist yet -> process
-- else if stored `source_hash` differs -> rebuild mentions and edges
+- if no state row exists -> process
+- else if **any** of `source_hash`, `catalog_hash`, `pipeline_version` differs
+  from stored values -> rebuild mentions and edges from scratch
+- else if `graph_sync_ok` is false -> retry graph injection only (PostgreSQL
+  already holds correct mentions and edges, since the triple hash matched)
 - else skip
 
-### 14.3 Catalog refresh condition
+Implementation note: the current pipeline defensively rebuilds mentions before
+retrying graph injection (rather than trusting the existing PostgreSQL state).
+This is functionally correct but wastes CPU. A future optimization should
+switch to graph-retry-only when all three hashes match.
+
+### 14.4 Catalog refresh condition
 
 Before every inference job:
 - refresh `legi_reference_catalog`

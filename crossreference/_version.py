@@ -16,4 +16,4 @@ Format is free-form (a date stamp + counter is conventional). Only equality
 matters; there is no ordering semantics.
 """
 
-PIPELINE_VERSION = "2026.04.30-1"
+PIPELINE_VERSION = "2026.06.30-1"

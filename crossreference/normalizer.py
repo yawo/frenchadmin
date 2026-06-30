@@ -31,6 +31,7 @@ _SPACE_HYPHEN_RE = re.compile(r"\s*-\s*")
 _PREFIX_STAR_SPACE_RE = re.compile(r"([LRDA])\s*\*\s*")
 # "L. 247" / "L 247" -> "L247". Preserve "L*247" by excluding the star branch.
 _LETTER_PREFIX_GAP_RE = re.compile(r"(?i)\b([LRDA])(?!\s*\*)\.?\s+(\d)")
+_LO_PREFIX_GAP_RE = re.compile(r"(?i)\bL\.O\.\s+(\d)")
 _MULTI_SPACE_RE = re.compile(r"\s+")
 
 
@@ -68,7 +69,7 @@ def normalize_article_number(raw: str) -> str:
         normalize_article_number("article 1012 ter A") == "1012 TER A"
         normalize_article_number("article 01 bis") == "1 BIS"
         normalize_article_number("1745 du code general des impots") == "1745"
-        normalize_article_number("L. 247 du livre des procedures fiscales") == "L.247"
+        normalize_article_number("L. 247 du livre des procedures fiscales") == "L247"
         normalize_article_number("238 de l'annexe II au code general des impots") == "238"
     """
     if not raw:
@@ -85,6 +86,7 @@ def normalize_article_number(raw: str) -> str:
     text = _SPACE_HYPHEN_RE.sub("-", text)
     text = _PREFIX_STAR_SPACE_RE.sub(r"\1*", text)
     text = _LETTER_PREFIX_GAP_RE.sub(r"\1\2", text)
+    text = _LO_PREFIX_GAP_RE.sub(r"L.O.\1", text)
     text = text.upper()
 
     # e.g. "01 BIS" -> "1 BIS" (leading zeros on a pure numeric head)

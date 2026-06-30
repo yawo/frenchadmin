@@ -6,6 +6,8 @@ config/__init__.py
 config/config.py
 config/logging_config.py
 crossreference/__init__.py
+crossreference/_patterns.py
+crossreference/_version.py
 crossreference/alias_detector.py
 crossreference/confidence.py
 crossreference/extractor.py

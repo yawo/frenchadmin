@@ -41,7 +41,7 @@ RELATION_KIND = {
 }
 
 _VU_PATTERN = re.compile(
-    r'\b(?:Vu\s+la|Vu\s+le|Vu\s+.*?procedure|VU)\b',
+    r'\b(?:Vu\s+la|Vu\s+le|Vu\s+.*?proc[eé]dure|VU|Consid[eé]rant|Aux\s+termes\s+de\s+l|Sur\s+le\s+(?:moyen|fondement|bien-fond[eé]))\b',
     re.IGNORECASE,
 )
 
