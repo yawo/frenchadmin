@@ -50,7 +50,7 @@ if FRONTEND_DIR.exists():
 
     @app.get("/{path:path}")
     async def serve_spa(path: str):
-        file_path = FRONTEND_DIR / path
-        if file_path.is_file():
+        file_path = (FRONTEND_DIR / path).resolve()
+        if file_path.is_relative_to(FRONTEND_DIR.resolve()) and file_path.is_file():
             return FileResponse(file_path)
         return FileResponse(FRONTEND_DIR / "index.html")
