@@ -29,19 +29,20 @@ def _get_tokenizer():
     return _tokenizer
 
 
-def _decode_sparse(token_weights: dict[int, float], top_k: int = 256) -> dict[str, float]:
+def _decode_sparse(token_weights: dict, top_k: int = 256) -> dict[str, float]:
     """Convert {token_id: weight} to {text_token: weight}, keeping top_k by weight."""
     if not token_weights:
         return {}
     tokenizer = _get_tokenizer()
-    sorted_items = sorted(token_weights.items(), key=lambda x: x[1], reverse=True)[:top_k]
+    sorted_items = sorted(token_weights.items(), key=lambda x: float(x[1]), reverse=True)[:top_k]
     decoded = {}
     for token_id, weight in sorted_items:
+        weight = float(weight)
         if weight <= 0:
             break
-        token_text = tokenizer.decode([token_id]).strip()
+        token_text = tokenizer.decode([int(token_id)]).strip()
         if token_text and len(token_text) > 1:
-            decoded[token_text.lower()] = float(weight)
+            decoded[token_text.lower()] = weight
     return decoded
 
 
