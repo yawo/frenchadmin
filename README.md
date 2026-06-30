@@ -338,7 +338,7 @@ The project includes a full GraphRAG frontend for querying the knowledge graph, 
 docker compose up --build
 ```
 
-The web interface will be available at `http://localhost:8000`.
+The web interface will be available at `http://localhost:8080`.
 
 #### Option 2: Local development
 
@@ -362,23 +362,23 @@ cd ../..
 **3. Start the backend (serves both API and built frontend):**
 
 ```bash
-uvicorn web.app:app --reload --port 8000
+uvicorn web.app:app --reload --port 8080
 ```
 
-The app is available at `http://localhost:8000`.
+The app is available at `http://localhost:8080`.
 
 **4. (Optional) Frontend dev mode with hot-reload:**
 
 ```bash
 # Terminal 1: backend
-uvicorn web.app:app --reload --port 8000
+uvicorn web.app:app --reload --port 8080
 
 # Terminal 2: frontend dev server (proxies /api to backend)
 cd web/frontend
 npm run dev
 ```
 
-Frontend dev server runs at `http://localhost:5173` with API proxy to port 8000.
+Frontend dev server runs at `http://localhost:5173` with API proxy to port 8080.
 
 ### API Endpoints
 
@@ -396,7 +396,7 @@ Frontend dev server runs at `http://localhost:5173` with API proxy to port 8000.
 ### Search Request Example
 
 ```bash
-curl -X POST http://localhost:8000/api/search \
+curl -X POST http://localhost:8080/api/search \
   -H "Content-Type: application/json" \
   -d '{
     "query": "conditions application article 200 CGI",
@@ -424,7 +424,7 @@ The GraphRAG web interface uses the same environment variables as the rest of th
 | `API_URL` | `https://openrouter.ai/api/v1` | LLM API base URL |
 | `API_KEY` | — | OpenRouter API key |
 | `LLM_MODEL` | `openrouter/hunter-alpha` | LLM model for synthesis |
-| `WEB_PORT` | `8000` | Web server port (Docker) |
+| `WEB_PORT` | `8080` | Web server port (Docker) |
 
 ### Query Flow
 
