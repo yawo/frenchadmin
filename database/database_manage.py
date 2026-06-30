@@ -165,21 +165,36 @@ def _ensure_doc_id_index(cursor, table_name: str):
 
 
 def _ensure_fts_column(cursor, table_name: str):
-    """Add tsvector generated column and GIN index for full-text search."""
+    """Add tsvector column, GIN index, and auto-update trigger for full-text search."""
     cursor.execute(
         "SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = 'chunk_tsv'",
         (table_name.lower(),),
     )
     if cursor.fetchone():
         return
+    table_upper = table_name.upper()
+    table_lower = table_name.lower()
     cursor.execute(
-        f"""ALTER TABLE {table_name.upper()} ADD COLUMN chunk_tsv tsvector
-            GENERATED ALWAYS AS (to_tsvector('french', coalesce(chunk_text, ''))) STORED;"""
+        f"ALTER TABLE {table_upper} ADD COLUMN IF NOT EXISTS chunk_tsv tsvector;"
     )
     cursor.execute(
-        f"CREATE INDEX IF NOT EXISTS idx_{table_name.lower()}_chunk_tsv ON {table_name.upper()} USING GIN(chunk_tsv);"
+        f"CREATE INDEX IF NOT EXISTS idx_{table_lower}_chunk_tsv ON {table_upper} USING GIN(chunk_tsv);"
     )
-    logger.info("Added FTS column and GIN index on %s", table_name.upper())
+    cursor.execute("""
+        CREATE OR REPLACE FUNCTION tsvector_update_chunk_tsv() RETURNS trigger AS $$
+        BEGIN
+            NEW.chunk_tsv := to_tsvector('french', coalesce(NEW.chunk_text, ''));
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+    """)
+    cursor.execute(f"DROP TRIGGER IF EXISTS trg_{table_lower}_chunk_tsv ON {table_upper};")
+    cursor.execute(f"""
+        CREATE TRIGGER trg_{table_lower}_chunk_tsv
+            BEFORE INSERT OR UPDATE OF chunk_text ON {table_upper}
+            FOR EACH ROW EXECUTE FUNCTION tsvector_update_chunk_tsv();
+    """)
+    logger.info("Added FTS column, GIN index, and trigger on %s", table_upper)
 
 
 def create_all_tables(model=EMBEDDING_MODEL, delete_existing: bool = False):

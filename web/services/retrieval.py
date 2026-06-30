@@ -30,7 +30,8 @@ def _cross_encoder_rerank(query: str, results: list[ChunkResult], top_k: int) ->
         reranked = []
         for idx, score in ranked:
             result = results[idx]
-            result.similarity = 1.0 / (1.0 + math.exp(-float(score)))
+            clamped = max(-500.0, min(500.0, float(score)))
+            result.similarity = 1.0 / (1.0 + math.exp(-clamped))
             reranked.append(result)
         return reranked
     except Exception as e:

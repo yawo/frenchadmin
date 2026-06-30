@@ -158,6 +158,7 @@ def _fts_search(
             LIMIT %s
         """
         try:
+            cursor.execute("SAVEPOINT fts_search")
             cursor.execute(query, [query_text, per_table_k])
             rows = cursor.fetchall()
             col_names = [desc[0] for desc in cursor.description]
@@ -179,9 +180,10 @@ def _fts_search(
                         metadata=metadata,
                     )
                 )
+            cursor.execute("RELEASE SAVEPOINT fts_search")
         except Exception as e:
             logger.debug("FTS search skipped for %s: %s", table, e)
-            conn.rollback()
+            cursor.execute("ROLLBACK TO SAVEPOINT fts_search")
 
     results.sort(key=lambda r: r.similarity, reverse=True)
     return results[:top_k]

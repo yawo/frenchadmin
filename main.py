@@ -278,20 +278,29 @@ def main():
 
         # Add full-text search columns for hybrid search
         elif args["add_fts_columns"]:
-            from database import get_connection
+            from database.database_manage import get_connection, _ensure_fts_column
 
             logger.info("Adding FTS columns (tsvector + GIN index) to legi, jade, bofip tables...")
-            conn = get_connection()
-            try:
-                sql_path = os.path.join(BASE_PATH, "database", "sql_scripts", "add_fts_columns.sql")
-                with open(sql_path) as f:
-                    sql = f.read()
+            with get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute(sql)
-                conn.commit()
+                for table in ("legi", "jade", "bofip"):
+                    logger.info("Processing %s...", table.upper())
+                    _ensure_fts_column(cursor, table)
+                    # Backfill existing rows in batches
+                    while True:
+                        cursor.execute(f"""
+                            UPDATE {table.upper()} SET chunk_tsv = to_tsvector('french', coalesce(chunk_text, ''))
+                            WHERE chunk_id IN (
+                                SELECT chunk_id FROM {table.upper()} WHERE chunk_tsv IS NULL LIMIT 5000
+                            )
+                        """)
+                        updated = cursor.rowcount
+                        conn.commit()
+                        if updated == 0:
+                            break
+                        logger.info("  %s: backfilled %d rows", table.upper(), updated)
+                    conn.commit()
                 logger.info("FTS columns added successfully. Hybrid search is now enabled.")
-            finally:
-                conn.close()
 
         # Clean cross-reference data
         elif args["clean_crossreferences"]:
